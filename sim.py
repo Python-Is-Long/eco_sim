@@ -4,19 +4,32 @@ from typing import List, Optional
 import random
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import pickle
+from multiprocessing import Pool, cpu_count
 
 
 # Configuration
 class Config:
+    # Individual settings
     INITIAL_FUNDS_INDIVIDUAL = 1000  # Initial funds for individuals
-    INITIAL_FUNDS_COMPANY = 10000  # Initial funds for companies
+    TALENT_MEAN = 100  # Mean talent (IQ-like)
+    TALENT_STD = 15  # Standard deviation of talent
+
+    # Company settings
+    INITIAL_FUNDS_COMPANY = 50000  # Increased initial funds
+    MIN_COMPANY_SIZE = 5  # Minimum initial company size
+    MAX_COMPANY_SIZE = 20  # Maximum initial company size
     SALARY_FACTOR = 100  # Salary = talent * SALARY_FACTOR
     DIVIDEND_RATE = 0.1  # 10% of profit paid as dividends
+    PROFIT_MARGIN_FOR_HIRING = 1.5  # Higher margin for hiring
+    BANKRUPTCY_THRESHOLD = 1000  # Companies can go slightly negative before bankruptcy
+
+    # Spending settings
     SPENDING_PROBABILITY_FACTOR = 5000  # Wealth factor for spending probability
+
+    # Entrepreneurship settings
     STARTUP_COST_FACTOR = 0.5  # Fraction of wealth used to start a company
     MIN_WEALTH_FOR_STARTUP = 10000  # Minimum wealth to start a company
-    PROFIT_MARGIN_FOR_HIRING = 1.2  # Revenue > costs * PROFIT_MARGIN_FOR_HIRING to hire
-    BANKRUPTCY_THRESHOLD = 0  # Funds <= BANKRUPTCY_THRESHOLD means bankruptcy
 
 
 @dataclass
@@ -83,7 +96,7 @@ class Company:
         self.costs = 0.0
         self.revenue = 0.0
         self.suppliers: List[Company] = []
-        self.max_employees = random.randint(5, 20)  # Random initial company size
+        self.max_employees = random.randint(Config.MIN_COMPANY_SIZE, Config.MAX_COMPANY_SIZE)
 
     def calculate_product_quality(self) -> float:
         if not self.employees:
@@ -104,8 +117,8 @@ class Company:
         self.costs = total_salary + supplier_costs
 
         # Update product quality and price
-        self.product_quality = self.calculate_product_quality()
-        self.product_price = self.costs * 1.2  # 20% markup
+        self.product_quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
+        self.product_price = max(1, self.costs * 1.2)  # Ensure price >= 1
 
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
         if self.funds >= salary and len(self.employees) < self.max_employees:
@@ -152,8 +165,10 @@ class EconomyStats:
         self.unemployment_rate = []
         self.avg_product_quality = []
         self.avg_product_price = []
-        self.num_bankruptcies = 0
-        self.num_new_companies = 0
+        self.bankruptcies_over_time = []
+        self.new_companies_over_time = []
+        self.num_bankruptcies = 0  # Initialize counter for bankruptcies
+        self.num_new_companies = 0  # Initialize counter for new companies
 
     def calculate_gini(self, wealths: List[float]) -> float:
         sorted_wealths = sorted(wealths)
@@ -171,7 +186,7 @@ class Economy:
         self.stats = EconomyStats()
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
-        talents = np.random.normal(100, 15, num_individuals)
+        talents = np.random.normal(Config.TALENT_MEAN, Config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(Config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
         return [Individual(t, f) for t, f in zip(talents, initial_funds)]
 
@@ -217,7 +232,7 @@ class Economy:
             # Check for bankruptcy
             if company.check_bankruptcy():
                 self.companies.remove(company)
-                self.stats.num_bankruptcies += 1
+                self.stats.num_bankruptcies += 1  # Increment bankruptcy counter
 
         # Individuals spend money
         for individual in self.individuals:
@@ -246,11 +261,12 @@ class Economy:
         self.collect_statistics()
 
     def start_new_company(self, individual: Individual):
-        initial_funds = individual.wallet * Config.STARTUP_COST_FACTOR
-        individual.wallet -= initial_funds
-        new_company = Company(individual, initial_funds)
-        self.companies.append(new_company)
-        self.stats.num_new_companies += 1
+        if individual.wallet > Config.MIN_WEALTH_FOR_STARTUP:
+            initial_funds = individual.wallet * Config.STARTUP_COST_FACTOR
+            individual.wallet -= initial_funds
+            new_company = Company(individual, initial_funds)
+            self.companies.append(new_company)
+            self.stats.num_new_companies += 1  # Increment new company counter
 
     def adjust_workforce(self, company: Company):
         if company.revenue > company.costs * Config.PROFIT_MARGIN_FOR_HIRING:
@@ -273,6 +289,8 @@ class Economy:
         self.stats.avg_wealth.append(np.mean(wealths))
         self.stats.num_companies.append(len(self.companies))
         self.stats.unemployment_rate.append(1 - employed / len(self.individuals))
+        self.stats.bankruptcies_over_time.append(self.stats.num_bankruptcies)  # Track bankruptcies
+        self.stats.new_companies_over_time.append(self.stats.num_new_companies)  # Track new companies
 
         if self.companies:
             self.stats.avg_product_quality.append(np.mean([c.product_quality for c in self.companies]))
@@ -280,6 +298,15 @@ class Economy:
         else:
             self.stats.avg_product_quality.append(0)
             self.stats.avg_product_price.append(0)
+
+    def save_state(self, filename: str):
+        with open(filename, 'wb') as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load_state(filename: str) -> 'Economy':
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
 
 
 def run_simulation(num_individuals: int = 1000, num_companies: int = 50, num_steps: int = 1000) -> Economy:
@@ -317,11 +344,11 @@ def plot_results(economy: Economy):
     axes[2, 1].set_title('Average Product Price')
     axes[2, 1].set_ylabel('Price')
 
-    axes[3, 0].plot(range(len(economy.stats.wealth_gini)), [economy.stats.num_bankruptcies] * len(economy.stats.wealth_gini), label='Bankruptcies')
+    axes[3, 0].plot(economy.stats.bankruptcies_over_time, label='Bankruptcies')
     axes[3, 0].set_title('Number of Bankruptcies Over Time')
     axes[3, 0].set_ylabel('Count')
 
-    axes[3, 1].plot(range(len(economy.stats.wealth_gini)), [economy.stats.num_new_companies] * len(economy.stats.wealth_gini), label='New Companies')
+    axes[3, 1].plot(economy.stats.new_companies_over_time, label='New Companies')
     axes[3, 1].set_title('Number of New Companies Over Time')
     axes[3, 1].set_ylabel('Count')
 
@@ -352,6 +379,15 @@ if __name__ == "__main__":
     np.random.seed(42)
     random.seed(42)
 
+    # Run simulation
     economy = run_simulation(num_individuals=10000, num_companies=50, num_steps=1000)
+
+    # Save simulation state
+    economy.save_state("economy_simulation.pkl")
+
+    # Load simulation state (optional)
+    # economy = Economy.load_state("economy_simulation.pkl")
+
+    # Plot results
     plot_results(economy)
     print_summary(economy)
