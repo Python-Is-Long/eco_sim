@@ -333,7 +333,10 @@ def run_simulation(
     return economy
 
 
-def plot_results(economy: Economy):
+def plot_results(
+        economy: Economy,
+        save_path: Optional[str] = None,
+):
     fig, axes = plt.subplots(4, 2, figsize=(15, 16))
     fig.suptitle('Economic Simulation Results')
 
@@ -370,6 +373,9 @@ def plot_results(economy: Economy):
     axes[3, 1].set_ylabel('Count')
 
     plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path)
+
     plt.show()
 
 
@@ -409,5 +415,5 @@ if __name__ == "__main__":
     # economy = Economy.load_state("economy_simulation.pkl")
 
     # Plot results
-    plot_results(economy)
+    plot_results(economy, save_path="economy_simulation_results.png")
     print_summary(economy)
