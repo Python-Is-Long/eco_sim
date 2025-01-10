@@ -6,6 +6,19 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 
+# Configuration
+class Config:
+    INITIAL_FUNDS_INDIVIDUAL = 1000  # Initial funds for individuals
+    INITIAL_FUNDS_COMPANY = 10000  # Initial funds for companies
+    SALARY_FACTOR = 100  # Salary = talent * SALARY_FACTOR
+    DIVIDEND_RATE = 0.1  # 10% of profit paid as dividends
+    SPENDING_PROBABILITY_FACTOR = 5000  # Wealth factor for spending probability
+    STARTUP_COST_FACTOR = 0.5  # Fraction of wealth used to start a company
+    MIN_WEALTH_FOR_STARTUP = 10000  # Minimum wealth to start a company
+    PROFIT_MARGIN_FOR_HIRING = 1.2  # Revenue > costs * PROFIT_MARGIN_FOR_HIRING to hire
+    BANKRUPTCY_THRESHOLD = 0  # Funds <= BANKRUPTCY_THRESHOLD means bankruptcy
+
+
 @dataclass
 class Product:
     quality: float
@@ -37,7 +50,7 @@ class Individual:
             return None
 
         # Wealthy individuals care more about quality than price
-        wealth_factor = np.tanh(self.wallet / 10000)  # Normalize wealth impact
+        wealth_factor = np.tanh(self.wallet / Config.SPENDING_PROBABILITY_FACTOR)
 
         def score_product(product: Product) -> float:
             quality_weight = 0.5 + 0.5 * wealth_factor
@@ -56,7 +69,7 @@ class Individual:
     def find_job(self, companies: List['Company']):
         if self.employer is None:
             for company in companies:
-                if company.hire_employee(self, self.talent * 100):  # Salary based on talent
+                if company.hire_employee(self, self.talent * Config.SALARY_FACTOR):
                     break
 
 
@@ -119,12 +132,12 @@ class Company:
     def pay_dividends(self):
         profit = self.revenue - self.costs
         if profit > 0:
-            dividend = profit * 0.1  # 10% dividend
+            dividend = profit * Config.DIVIDEND_RATE
             self.owner.receive_money(dividend)
             self.funds -= dividend
 
     def check_bankruptcy(self) -> bool:
-        if self.funds <= 0:
+        if self.funds <= Config.BANKRUPTCY_THRESHOLD:
             for employee in self.employees[:]:
                 self.fire_employee(employee)
             return True
@@ -139,6 +152,8 @@ class EconomyStats:
         self.unemployment_rate = []
         self.avg_product_quality = []
         self.avg_product_price = []
+        self.num_bankruptcies = 0
+        self.num_new_companies = 0
 
     def calculate_gini(self, wealths: List[float]) -> float:
         sorted_wealths = sorted(wealths)
@@ -157,7 +172,7 @@ class Economy:
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(100, 15, num_individuals)
-        initial_funds = np.random.exponential(1000, num_individuals)
+        initial_funds = np.random.exponential(Config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
         return [Individual(t, f) for t, f in zip(talents, initial_funds)]
 
     def _create_companies(self, num_companies: int) -> List[Company]:
@@ -167,7 +182,7 @@ class Economy:
         for _ in range(num_companies):
             owner = random.choice(list(available_workers))
             available_workers.remove(owner)
-            initial_funds = np.random.exponential(10000)
+            initial_funds = np.random.exponential(Config.INITIAL_FUNDS_COMPANY)
             company = Company(owner, initial_funds)
 
             # Hire initial employees
@@ -202,10 +217,11 @@ class Economy:
             # Check for bankruptcy
             if company.check_bankruptcy():
                 self.companies.remove(company)
+                self.stats.num_bankruptcies += 1
 
         # Individuals spend money
         for individual in self.individuals:
-            if random.random() < np.tanh(individual.wallet / 5000):
+            if random.random() < np.tanh(individual.wallet / Config.SPENDING_PROBABILITY_FACTOR):
                 available_products = [company.get_product() for company in self.companies]
                 chosen_product = individual.decide_purchase(available_products)
                 if chosen_product:
@@ -217,8 +233,37 @@ class Economy:
             if individual.employer is None:
                 individual.find_job(self.companies)
 
+        # Start new companies
+        for individual in self.individuals:
+            if individual.wallet > Config.MIN_WEALTH_FOR_STARTUP:
+                self.start_new_company(individual)
+
+        # Adjust workforce for companies
+        for company in self.companies:
+            self.adjust_workforce(company)
+
         # Collect statistics
         self.collect_statistics()
+
+    def start_new_company(self, individual: Individual):
+        initial_funds = individual.wallet * Config.STARTUP_COST_FACTOR
+        individual.wallet -= initial_funds
+        new_company = Company(individual, initial_funds)
+        self.companies.append(new_company)
+        self.stats.num_new_companies += 1
+
+    def adjust_workforce(self, company: Company):
+        if company.revenue > company.costs * Config.PROFIT_MARGIN_FOR_HIRING:
+            # Hire new employees
+            potential_employees = [ind for ind in self.individuals if ind.employer is None]
+            if potential_employees:
+                new_employee = max(potential_employees, key=lambda x: x.talent)
+                company.hire_employee(new_employee, new_employee.talent * Config.SALARY_FACTOR)
+        elif company.revenue < company.costs:
+            # Fire employees
+            if company.employees:
+                employee_to_fire = random.choice(company.employees)
+                company.fire_employee(employee_to_fire)
 
     def collect_statistics(self):
         wealths = [ind.wallet for ind in self.individuals]
@@ -245,7 +290,7 @@ def run_simulation(num_individuals: int = 1000, num_companies: int = 50, num_ste
 
 
 def plot_results(economy: Economy):
-    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+    fig, axes = plt.subplots(4, 2, figsize=(15, 16))
     fig.suptitle('Economic Simulation Results')
 
     axes[0, 0].plot(economy.stats.wealth_gini)
@@ -272,6 +317,14 @@ def plot_results(economy: Economy):
     axes[2, 1].set_title('Average Product Price')
     axes[2, 1].set_ylabel('Price')
 
+    axes[3, 0].plot(range(len(economy.stats.wealth_gini)), [economy.stats.num_bankruptcies] * len(economy.stats.wealth_gini), label='Bankruptcies')
+    axes[3, 0].set_title('Number of Bankruptcies Over Time')
+    axes[3, 0].set_ylabel('Count')
+
+    axes[3, 1].plot(range(len(economy.stats.wealth_gini)), [economy.stats.num_new_companies] * len(economy.stats.wealth_gini), label='New Companies')
+    axes[3, 1].set_title('Number of New Companies Over Time')
+    axes[3, 1].set_ylabel('Count')
+
     plt.tight_layout()
     plt.show()
 
@@ -283,6 +336,8 @@ def print_summary(economy: Economy):
     print(f"Average wealth: {economy.stats.avg_wealth[-1]:.2f}")
     print(f"Wealth inequality (Gini): {economy.stats.wealth_gini[-1]:.2f}")
     print(f"Unemployment rate: {economy.stats.unemployment_rate[-1]:.2%}")
+    print(f"Total bankruptcies: {economy.stats.num_bankruptcies}")
+    print(f"Total new companies: {economy.stats.num_new_companies}")
 
     wealth_percentiles = np.percentile([ind.wallet for ind in economy.individuals], [25, 50, 75, 90, 99])
     print("\nWealth Distribution:")
