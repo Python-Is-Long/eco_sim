@@ -5,6 +5,7 @@ import random
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import pickle
+import os
 
 
 # Configuration
@@ -15,7 +16,7 @@ class Config:
     TALENT_STD = 15  # Standard deviation of talent
 
     # Company settings
-    INITIAL_FUNDS_COMPANY = 50000  # Increased initial funds
+    INITIAL_FUNDS_COMPANY = 5000000  # Increased initial funds
     MIN_COMPANY_SIZE = 5  # Minimum initial company size
     MAX_COMPANY_SIZE = 20  # Maximum initial company size
     SALARY_FACTOR = 100  # Salary = talent * SALARY_FACTOR
@@ -158,6 +159,7 @@ class Company:
 
 class EconomyStats:
     def __init__(self):
+        self.step = 0
         self.wealth_gini = []
         self.avg_wealth = []
         self.num_companies = []
@@ -215,6 +217,7 @@ class Economy:
         return companies
 
     def simulate_step(self):
+        self.stats.step += 1
         # Update company financials and pay salaries
         for company in self.companies:
             company.update_financials()
@@ -308,10 +311,25 @@ class Economy:
             return pickle.load(f)
 
 
-def run_simulation(num_individuals: int = 1000, num_companies: int = 50, num_steps: int = 1000) -> Economy:
-    economy = Economy(num_individuals, num_companies)
-    for _ in tqdm(range(num_steps), desc="Simulating economy"):
+def run_simulation(
+        num_individuals: int = 1000,
+        num_companies: int = 50,
+        num_steps: int = 1000,
+        state_pickle_path: str = "economy_simulation.pkl",
+        resume_state: bool = False,
+) -> Economy:
+
+    # Load simulation state (optional)
+    if resume_state and os.path.exists(state_pickle_path):
+        economy = Economy.load_state("economy_simulation.pkl")
+        print(f"Resuming simulation from saved state: {state_pickle_path}")
+    else:
+        economy = Economy(num_individuals, num_companies)
+    for _ in tqdm(range(num_steps-economy.stats.step), desc="Simulating economy"):
         economy.simulate_step()
+
+        # Save simulation state
+        economy.save_state("economy_simulation.pkl")
     return economy
 
 
@@ -379,10 +397,13 @@ if __name__ == "__main__":
     random.seed(42)
 
     # Run simulation
-    economy = run_simulation(num_individuals=10000, num_companies=50, num_steps=1000)
-
-    # Save simulation state
-    economy.save_state("economy_simulation.pkl")
+    economy = run_simulation(
+        num_individuals=10000,
+        num_companies=50,
+        num_steps=1000,
+        state_pickle_path="economy_simulation.pkl",
+        resume_state=True,
+    )
 
     # Load simulation state (optional)
     # economy = Economy.load_state("economy_simulation.pkl")
