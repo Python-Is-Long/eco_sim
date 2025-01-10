@@ -5,7 +5,6 @@ import random
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import pickle
-from multiprocessing import Pool, cpu_count
 
 
 # Configuration
@@ -380,7 +379,7 @@ if __name__ == "__main__":
     random.seed(42)
 
     # Run simulation
-    economy = run_simulation(num_individuals=10000, num_companies=50, num_steps=1000)
+    economy = run_simulation(num_individuals=1000, num_companies=50, num_steps=1000)
 
     # Save simulation state
     economy.save_state("economy_simulation.pkl")
