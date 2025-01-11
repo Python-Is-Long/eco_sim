@@ -58,12 +58,13 @@ def get_scalar_attributes(data_class):
     [Input('interval-component', 'n_intervals')]
 )
 def update_dashboard(n):
-    data_class = load_data()
+    economy_stats: EconomyStats = load_data()
     last_update = 'Last Update: {}'.format(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
     # Get attributes
-    scalar_attrs = get_scalar_attributes(data_class)
-    time_series_attrs = get_time_series_attributes(data_class)
+    scalar_attrs = economy_stats.dict_scalar_attributes
+    line_attrs = economy_stats.dict_time_series_attributes
+    histogram_attrs = economy_stats.dict_histogram_attributes
 
     # Create scalar value displays
     scalar_components = []
@@ -75,31 +76,51 @@ def update_dashboard(n):
         scalar_components.append(component)
 
     # Time steps (assuming steps correspond to list indices)
-    max_length = max([len(v) for v in time_series_attrs.values()] + [0])
+    max_length = max([len(v) for v in line_attrs.values()] + [0])
     steps = list(range(max_length))
 
     # Create time-series plots
+    combined_attrs = {}
+    combined_attrs.update({attr: ('line', data) for attr, data in line_attrs.items()})
+    combined_attrs.update({attr: ('histogram', data) for attr, data in histogram_attrs.items()})
+
     plot_components = []
     plots_per_row = 2  # Adjust this value to change the number of plots per row
     row_children = []
     count = 0
 
-    for attr_name, values in time_series_attrs.items():
-        # Extend values to match max length if necessary
-        if len(values) < max_length:
-            values = values + [None] * (max_length - len(values))
+    for attr_name, value in combined_attrs.items():
+        plot_kind, data = value
+        plot_name = attr_name.replace('_', ' ').title()
 
-        trace = go.Scatter(
-            x=steps,
-            y=values,
-            mode='lines',
-            name=attr_name.replace('_', ' ').title()
-        )
-        layout = go.Layout(
-            title=attr_name.replace('_', ' ').title(),
-            xaxis={'title': 'Step'},
-            yaxis={'title': attr_name.replace('_', ' ').title()}
-        )
+        # Line plot
+        if plot_kind == 'line':
+            # Extend values to match max length if necessary
+            if len(data) < max_length:
+                data = data + [None] * (max_length - len(data))
+            
+            trace = go.Scatter(
+                x=steps,
+                y=data,
+                mode='lines',
+                name=plot_name
+            )
+            layout = go.Layout(
+                title=plot_name,
+                xaxis={'title': 'Step'},
+                yaxis={'title': plot_name}
+            )
+        # Plot histogram
+        elif plot_kind == 'histogram':
+            trace = go.Histogram(
+                x=data[-1],
+                name=plot_name,
+                
+            )
+            layout = go.Layout(
+                title=plot_name,
+            )
+        
         fig = go.Figure(data=[trace], layout=layout)
 
         graph = dcc.Graph(
@@ -112,7 +133,7 @@ def update_dashboard(n):
         count += 1
 
         # Add a row when we reach the plots per row or at the end
-        if count % plots_per_row == 0 or count == len(time_series_attrs):
+        if count % plots_per_row == 0 or count == len(combined_attrs):
             plot_row = html.Div(row_children, style={'display': 'flex', 'marginBottom': '20px'})
             plot_components.append(plot_row)
             row_children = []

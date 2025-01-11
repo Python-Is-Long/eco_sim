@@ -1096,3 +1096,347 @@ By dynamically generating the dashboard's components based on the attributes of 
 The layout adjusts to display a specified number of plots per row, improving the readability and organization of the dashboard.
 
 Feel free to customize the styling and adjust parameters to suit your preferences. Let me know if you have any questions or need further assistance!
+
+
+---
+
+
+Certainly! Let's update your code to include plotting histograms for the attributes in `histogram_attrs`. Each of these attributes is a 2D list, and we'll plot a histogram of the most recent data by selecting the last item in each list.
+
+We'll modify the `update_dashboard` function to handle `histogram_attrs` similarly to how we handle `time_series_attrs`. We'll create histogram plots and arrange them in rows with a specified number of plots per row (e.g., 2 plots per row).
+
+---
+
+### **Updated Code**
+
+Here's the updated code with the necessary changes:
+
+```python
+import dash
+from dash import html, dcc
+from dash.dependencies import Input, Output
+import plotly.graph_objs as go
+import pickle
+import os
+from datetime import datetime
+from sim import EconomyStats  # Assuming sim.py contains the EconomyStats class
+
+# Path to the pickle file
+PICKLE_FILE_PATH = 'simulation_stats.pkl'  # Update with your actual path
+
+# Initialize the Dash app
+app = dash.Dash(__name__)
+app.title = 'Live Data Dashboard'
+
+# Define the layout
+app.layout = html.Div([
+    html.H1('Live Data Dashboard'),
+
+    # Div for last update time
+    html.Div(id='last-update', style={'marginBottom': 20}),
+
+    # Div for scalar values
+    html.Div(id='scalar-values-div', style={'marginBottom': 40}),
+
+    # Div for time-series plots
+    html.Div(id='plots-div'),
+
+    # Div for histogram plots
+    html.Div(id='histograms-div'),
+
+    # Interval component for updates
+    dcc.Interval(
+        id='interval-component',
+        interval=5*1000,  # Update every 5 seconds
+        n_intervals=0
+    )
+])
+
+# Function to load data from the pickle file
+def load_data():
+    with open(PICKLE_FILE_PATH, 'rb') as f:
+        data_class = pickle.load(f)
+    return data_class
+
+# Callback to update scalar values, time-series plots, and histograms
+@app.callback(
+    [
+        Output('scalar-values-div', 'children'),
+        Output('plots-div', 'children'),
+        Output('histograms-div', 'children'),
+        Output('last-update', 'children'),
+    ],
+    [Input('interval-component', 'n_intervals')]
+)
+def update_dashboard(n):
+    economy_stats: EconomyStats = load_data()
+    last_update = 'Last Update: {}'.format(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+    # Get attributes
+    scalar_attrs = economy_stats.dict_scalar_attributes
+    time_series_attrs = economy_stats.dict_time_series_attributes
+    histogram_attrs = economy_stats.dict_histogram_attributes
+
+    # Create scalar value displays
+    scalar_components = []
+    for attr_name, value in scalar_attrs.items():
+        component = html.Div([
+            html.H4(attr_name.replace('_', ' ').title()),
+            html.Div(str(value), style={'fontSize': 24})
+        ], style={'width': '20%', 'display': 'inline-block', 'marginBottom': '20px'})
+        scalar_components.append(component)
+
+    # Time steps (assuming steps correspond to list indices)
+    max_length = max([len(v) for v in time_series_attrs.values()] + [0])
+    steps = list(range(max_length))
+
+    # Create time-series plots
+    time_series_plots = []
+    plots_per_row = 2  # Adjust this value to change the number of plots per row
+    row_children = []
+    count = 0
+
+    for attr_name, values in time_series_attrs.items():
+        # Extend values to match max length if necessary
+        if len(values) < max_length:
+            values = values + [None] * (max_length - len(values))
+
+        trace = go.Scatter(
+            x=steps,
+            y=values,
+            mode='lines',
+            name=attr_name.replace('_', ' ').title()
+        )
+        layout = go.Layout(
+            title=attr_name.replace('_', ' ').title(),
+            xaxis={'title': 'Step'},
+            yaxis={'title': attr_name.replace('_', ' ').title()}
+        )
+        fig = go.Figure(data=[trace], layout=layout)
+
+        graph = dcc.Graph(
+            id=f'{attr_name}-graph',
+            figure=fig,
+            style={'width': f'{100 / plots_per_row}%', 'display': 'inline-block'}
+        )
+
+        row_children.append(graph)
+        count += 1
+
+        # Add a row when we reach the plots per row or at the end
+        if count % plots_per_row == 0 or count == len(time_series_attrs):
+            plot_row = html.Div(row_children, style={'display': 'flex', 'marginBottom': '20px'})
+            time_series_plots.append(plot_row)
+            row_children = []
+
+    # Create histogram plots
+    histogram_plots = []
+    histograms_per_row = 2  # Adjust this value to change the number of histograms per row
+    hist_row_children = []
+    hist_count = 0
+
+    for attr_name, values in histogram_attrs.items():
+        # Get the last item (most recent data)
+        if values and len(values) > 0:
+            last_data = values[-1]  # This should be a list
+        else:
+            last_data = []
+
+        trace = go.Histogram(
+            x=last_data,
+            name=attr_name.replace('_', ' ').title()
+        )
+        layout = go.Layout(
+            title=attr_name.replace('_', ' ').title(),
+            xaxis={'title': attr_name.replace('_', ' ').title()},
+            yaxis={'title': 'Frequency'}
+        )
+        fig = go.Figure(data=[trace], layout=layout)
+
+        graph = dcc.Graph(
+            id=f'{attr_name}-histogram',
+            figure=fig,
+            style={'width': f'{100 / histograms_per_row}%', 'display': 'inline-block'}
+        )
+
+        hist_row_children.append(graph)
+        hist_count += 1
+
+        # Add a row when we reach the histograms per row or at the end
+        if hist_count % histograms_per_row == 0 or hist_count == len(histogram_attrs):
+            hist_row = html.Div(hist_row_children, style={'display': 'flex', 'marginBottom': '20px'})
+            histogram_plots.append(hist_row)
+            hist_row_children = []
+
+    return scalar_components, time_series_plots, histogram_plots, last_update
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
+```
+
+---
+
+### **Explanation of Changes**
+
+1. **Added `histograms-div` to the Layout:**
+
+   ```python
+   # Div for histogram plots
+   html.Div(id='histograms-div'),
+   ```
+
+   This placeholder will hold all the histogram plots we generate.
+
+2. **Updated Callback Outputs:**
+
+   ```python
+   @app.callback(
+       [
+           Output('scalar-values-div', 'children'),
+           Output('plots-div', 'children'),
+           Output('histograms-div', 'children'),
+           Output('last-update', 'children'),
+       ],
+       [Input('interval-component', 'n_intervals')]
+   )
+   ```
+
+   We added `Output('histograms-div', 'children')` to allow us to update the histogram plots dynamically.
+
+3. **Processing Histogram Attributes:**
+
+   In the `update_dashboard` function, we added code to process the `histogram_attrs`.
+
+   ```python
+   # Create histogram plots
+   histogram_plots = []
+   histograms_per_row = 2  # Adjust this value to change the number of histograms per row
+   hist_row_children = []
+   hist_count = 0
+
+   for attr_name, values in histogram_attrs.items():
+       # Get the last item (most recent data)
+       if values and len(values) > 0:
+           last_data = values[-1]  # This should be a list
+       else:
+           last_data = []
+
+       trace = go.Histogram(
+           x=last_data,
+           name=attr_name.replace('_', ' ').title()
+       )
+       layout = go.Layout(
+           title=attr_name.replace('_', ' ').title(),
+           xaxis={'title': attr_name.replace('_', ' ').title()},
+           yaxis={'title': 'Frequency'}
+       )
+       fig = go.Figure(data=[trace], layout=layout)
+
+       graph = dcc.Graph(
+           id=f'{attr_name}-histogram',
+           figure=fig,
+           style={'width': f'{100 / histograms_per_row}%', 'display': 'inline-block'}
+       )
+
+       hist_row_children.append(graph)
+       hist_count += 1
+
+       # Add a row when we reach the histograms per row or at the end
+       if hist_count % histograms_per_row == 0 or hist_count == len(histogram_attrs):
+           hist_row = html.Div(hist_row_children, style={'display': 'flex', 'marginBottom': '20px'})
+           histogram_plots.append(hist_row)
+           hist_row_children = []
+   ```
+
+   **Explanation:**
+
+   - **Variables Initialization:**
+
+     We initialize `histogram_plots`, `histograms_per_row`, `hist_row_children`, and `hist_count` to manage the layout and count of histogram plots.
+
+   - **Iterating Through Histogram Attributes:**
+
+     For each histogram attribute:
+
+     - **Selecting the Last Data Point:**
+
+       ```python
+       if values and len(values) > 0:
+           last_data = values[-1]  # This should be a list
+       else:
+           last_data = []
+       ```
+
+       We check if `values` is not empty and select the last item from the 2D list. If `values` is empty, we use an empty list.
+
+     - **Creating a Histogram Trace:**
+
+       ```python
+       trace = go.Histogram(
+           x=last_data,
+           name=attr_name.replace('_', ' ').title()
+       )
+       ```
+
+       We create a `go.Histogram` trace using the last data.
+
+     - **Creating a Figure and Graph Component:**
+
+       We create a `go.Figure` and wrap it in a `dcc.Graph` component.
+
+     - **Arranging Histogram Plots into Rows:**
+
+       Similar to how we arranged time-series plots, we collect `graphs` into `hist_row_children` and create a row when the specified number of histograms per row is reached.
+
+4. **Updating the Return Statement:**
+
+   We updated the return statement to include `histogram_plots`:
+
+   ```python
+   return scalar_components, time_series_plots, histogram_plots, last_update
+   ```
+
+---
+
+### **Adjustments and Customization**
+
+#### **Adjusting the Number of Histograms per Row**
+
+To change the number of histograms displayed per row, modify the `histograms_per_row` variable:
+
+```python
+histograms_per_row = 3  # For 3 histograms per row
+```
+
+#### **Handling Empty or Inconsistent Data**
+
+- The code checks if `values` is not empty before accessing `values[-1]`. This prevents errors if a list is empty.
+- If the last data is empty, an empty histogram will be displayed.
+
+#### **Styling and Appearance**
+
+- **Graph Size:** We calculate the width of each graph based on the `histograms_per_row` value.
+- **Margins and Spacing:** Adjust `style` dictionaries to change spacing between plots or rows.
+
+---
+
+### **Summary**
+
+By updating your code to include the histogram attributes, we now dynamically generate histograms for each attribute in `histogram_attrs`. We plot only the most recent data (the last item in each 2D list).
+
+The code is structured to handle future additions of attributes gracefully:
+
+- **Dynamic Plot Generation:** Any new attributes added to `dict_time_series_attributes` or `dict_histogram_attributes` will automatically be included in the dashboard.
+- **Layout Flexibility:** You can adjust the number of plots per row for both time-series plots and histograms independently.
+
+---
+
+### **Final Notes**
+
+- **Data Consistency:** Ensure that the data in `histogram_attrs` is structured correctly (i.e., each attribute is a list of lists, and each inner list contains numeric data suitable for a histogram).
+- **Performance:** If the data is large, consider optimizing the data handling or downsampling to improve performance.
+- **Error Handling:** The code includes basic checks for empty data. You may want to implement additional error handling as needed.
+
+---
+
+Let me know if you need further adjustments or have any questions!

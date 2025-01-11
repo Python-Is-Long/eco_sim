@@ -3,7 +3,7 @@ import pickle
 import random
 import uuid
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Union, Any, Tuple, Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -101,7 +101,7 @@ class Company:
         self.owner = owner
         self.funds = initial_funds
         self.employees: List[Individual] = []
-        self.product = Product(quality=0, price=0, company=self, name=uuid.uuid4())
+        self.product = Product(quality=1, price=1, company=self, name=uuid.uuid4())
         self.revenue = 0.0
         self.dividend = 0.0
         self.suppliers: List[Company] = []
@@ -109,7 +109,7 @@ class Company:
         self.bankruptcy = False
 
     @property
-    def total_salery(self):
+    def total_salary(self):
         return sum(emp.salary for emp in self.employees)
 
     @property
@@ -118,7 +118,7 @@ class Company:
 
     @property
     def costs(self):
-        return self.total_salery + self.total_material_cost
+        return self.total_salary + self.total_material_cost
 
     @property
     def profit(self):
@@ -137,7 +137,7 @@ class Company:
         supplier_quality = sum(supplier.product.quality for supplier in self.suppliers)
         return base_quality + supplier_quality * 0.5
 
-    def update_financial(self):
+    def update_product_attributes(self):
         # Update product quality and price
         self.product.quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
         self.product.price = max(1, self.costs * 1.2)  # Ensure price >= 1
@@ -158,20 +158,11 @@ class Company:
             employee.employer = None
             employee.salary = 0.0
 
-    def get_product(self) -> Product:
-        return Product(
-            quality=self.product.quality,
-            price=self.product.price,
-            company=self,
-            name=uuid.uuid4(),
-        )
-
     def pay_dividends(self):
         if self.profit > 0:
             self.dividend = self.profit * Config.DIVIDEND_RATE
             self.owner.receive_money(self.dividend)
-            return self.profit - self.dividend
-        return self.profit
+            self.funds -= self.dividend
 
     def check_bankruptcy(self) -> bool:
         if self.funds < self.costs:
@@ -179,7 +170,9 @@ class Company:
             for employee in self.employees[:]:
                 self.fire_employee(employee)
             # The owner runs with leftover company funds
-            self.owner.wallet += self.funds
+            if self.funds < 0:
+                print('Negative money:', self.funds)
+            self.owner.receive_money(self.funds)
             self.funds = 0
             self.bankruptcy = True
             return True
@@ -241,8 +234,9 @@ class Economy:
 
     def simulate_step(self):
         self.stats.step += 1
-        # Update company financial and pay salaries
+        # Update company product prices and quality and reset revenue
         for company in self.companies:
+            company.update_product_attributes()
             company.revenue = 0
 
         # Individuals spend money
@@ -254,24 +248,22 @@ class Economy:
                     # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
 
         for company in self.companies:
-            company.update_financial()
-
+            # Add revenue to funds
+            company.funds += company.revenue
             # Pay dividends from profit to owner
-            remaining_profit = company.pay_dividends()
-            company.funds += remaining_profit
+            company.pay_dividends()
 
             # Check for bankruptcy
             if company.check_bankruptcy():
                 self.companies.remove(company)
                 self.stats.num_bankruptcies += 1
                 continue
-
+            # Pays employees salary
             for employee in company.employees:
-                if company.funds >= employee.salary:
-                    company.funds -= employee.salary
-                    employee.receive_money(employee.salary)
-                else:
-                    company.fire_employee(employee)
+                company.funds -= employee.salary
+                employee.receive_money(employee.salary)
+            if company.funds < 0:
+                print('negative funds:', company.funds)
 
         # Individuals find jobs
         for individual in self.individuals:
@@ -294,7 +286,7 @@ class Economy:
     def start_new_company(self, individual: Individual):
         if individual.wallet > Config.MIN_WEALTH_FOR_STARTUP:
             initial_funds = individual.wallet * Config.STARTUP_COST_FACTOR
-            individual.wallet -= initial_funds
+            individual.spend(initial_funds)
             new_company = Company(individual, initial_funds)
             self.companies.append(new_company)
             self.all_companies.append(new_company)
@@ -324,6 +316,7 @@ class Economy:
 
 
 class EconomyStats:
+
     def __init__(self):
         self.step = 0
         self.total_money = []
@@ -339,6 +332,22 @@ class EconomyStats:
         self.new_companies_over_time = []
         self.num_bankruptcies = 0  # Initialize counter for bankruptcies
         self.num_new_companies = 0  # Initialize counter for new companies
+        self.all_company_funds: List[List[float]] = []
+        self.all_individual_funds: List[List[float]] = []
+        self.all_product_prices: List[List[float]] = []
+        self.all_salaries: List[List[float]] = []
+
+    @property
+    def dict_scalar_attributes(self) -> Dict:
+        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, int)}
+    
+    @property
+    def dict_histogram_attributes(self) -> Dict:
+        return {attr: self.__dict__[attr] for attr in ['all_company_funds', 'all_individual_funds', 'all_product_prices', 'all_salaries']}
+
+    @property
+    def dict_time_series_attributes(self) -> Dict:
+        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, list) and attr not in self.dict_histogram_attributes}
 
     def calculate_gini(self, wealths: List[float]) -> float:
         sorted_wealths = sorted(wealths)
@@ -367,12 +376,20 @@ class EconomyStats:
         self.bankruptcies_over_time.append(self.num_bankruptcies)  # Track bankruptcies
         self.new_companies_over_time.append(self.num_new_companies)  # Track new companies
 
+        to_low_precision = lambda x: float(np.float32(x))
+        self.all_company_funds.append([to_low_precision(c.funds) for c in economy.companies])
+        self.all_individual_funds.append([to_low_precision(i.wallet) for i in economy.individuals])
+        self.all_product_prices.append([to_low_precision(c.product.price) for c in economy.companies])
+        self.all_salaries.append([to_low_precision(e.salary) for e in economy.individuals if e.employer])
+
         if economy.companies:
             self.avg_product_quality.append(np.mean([c.product.quality for c in economy.companies]))
             self.avg_product_price.append(np.mean([c.product.price for c in economy.companies]))
         else:
             self.avg_product_quality.append(0)
             self.avg_product_price.append(0)
+        
+        print([c.product.price for c in economy.companies if c.product.price < 0])
 
 
 def run_simulation(
@@ -391,7 +408,7 @@ def run_simulation(
         economy = Economy(num_individuals, num_companies)
     for _ in tqdm(range(num_steps-economy.stats.step), desc="Simulating economy"):
         economy.simulate_step()
-        economy.all_companies[0].print_statistics()
+        # economy.all_companies[0].print_statistics()
         print(f'{economy.stats.total_money[-1]=}')
         economy.stats.save_stats("simulation_stats.pkl")
 
@@ -475,7 +492,7 @@ if __name__ == "__main__":
     np.random.seed(42)
     random.seed(42)
 
-    # Run simulation
+    # # Run simulation
     economy = run_simulation(
         num_individuals=10000,
         num_companies=50,
@@ -489,4 +506,4 @@ if __name__ == "__main__":
 
     # Plot results
     # plot_results(economy, save_path="economy_simulation_results.png")
-    print_summary(economy)
+    # print_summary(economy)
