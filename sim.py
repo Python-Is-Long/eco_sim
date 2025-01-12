@@ -9,11 +9,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
+from utils.genericObjects import NamedObject, FundsObject
+
 
 # Configuration
 class Config:
     # Individual settings
     INITIAL_FUNDS_INDIVIDUAL = 1000  # Initial funds for individuals
+    FUNDS_PRECISION = np.float64
     TALENT_MEAN = 100  # Mean talent (IQ-like)
     TALENT_STD = 15  # Standard deviation of talent
 
@@ -41,29 +44,16 @@ class Product:
     company: 'Company'
     name: str
 
-class Individual:
+class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
     def __init__(self, talent: float, initial_funds: float):
-        self.name = uuid.uuid4()
+        self.set_funds(initial_funds)
         self.talent = talent
-        self.wallet = initial_funds
         self.employer: Optional[Company] = None
-        self.salary = 0.0
-
-    def can_afford(self, amount: float) -> bool:
-        return self.wallet >= amount
-
-    def spend(self, amount: float) -> bool:
-        if self.can_afford(amount):
-            self.wallet -= amount
-            return True
-        return False
+        self.salary = self.funds_precision(0)
 
     def make_purchase(self, product: Product):
-        self.spend(product.price)
+        self.transfer_funds_to(product.company, product.price)
         product.company.revenue += product.price
-
-    def receive_money(self, amount: float):
-        self.wallet += amount
 
     @staticmethod
     def score_product(product: Product, wealth_factor) -> float:
@@ -76,7 +66,7 @@ class Individual:
             return None
 
         # Wealthy individuals care more about quality than price
-        wealth_factor = np.tanh(self.wallet / Config.SPENDING_PROBABILITY_FACTOR)
+        wealth_factor = np.tanh(self.funds / Config.SPENDING_PROBABILITY_FACTOR)
 
         scored_products = [(self.score_product(p, wealth_factor), p) for p in products]
         if not scored_products:
@@ -95,15 +85,14 @@ class Individual:
                     break
 
 
-class Company:
-    def __init__(self, owner: Individual, initial_funds: float):
-        self.name = uuid.uuid4()
+class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
+    def __init__(self, owner: Individual, initial_funds: float=0):
+        self.set_funds(initial_funds)
         self.owner = owner
-        self.funds = initial_funds
+        
         self.employees: List[Individual] = []
         self.product = Product(quality=1, price=1, company=self, name=uuid.uuid4())
-        self.revenue = 0.0
-        self.dividend = 0.0
+        self.revenue = self.funds_precision(0)
         self.suppliers: List[Company] = []
         self.max_employees = random.randint(Config.MIN_COMPANY_SIZE, Config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
@@ -123,6 +112,10 @@ class Company:
     @property
     def profit(self):
         return self.revenue - self.costs
+
+    @property
+    def dividend(self):
+        return self.profit * Config.DIVIDEND_RATE if self.profit > 0 else 0
 
     def calculate_product_quality(self) -> float:
         if not self.employees:
@@ -148,7 +141,6 @@ class Company:
             candidate.employer = self
             candidate.salary = salary
             self.employees.append(candidate)
-            self.funds -= salary
             return True
         return False
 
@@ -158,25 +150,17 @@ class Company:
             employee.employer = None
             employee.salary = 0.0
 
-    def pay_dividends(self):
-        if self.profit > 0:
-            self.dividend = self.profit * Config.DIVIDEND_RATE
-            self.owner.receive_money(self.dividend)
-            self.funds -= self.dividend
-
     def check_bankruptcy(self) -> bool:
         if self.funds < self.costs:
             # Fire all employees
-            for employee in self.employees[:]:
+            for employee in self.employees:
                 self.fire_employee(employee)
             # The owner runs with leftover company funds
-            if self.funds < 0:
-                print('Negative money:', self.funds)
-            self.owner.receive_money(self.funds)
-            self.funds = 0
+            self.transfer_funds_to(self.owner, self.funds)
             self.bankruptcy = True
             return True
         return False
+    
 
     def print_statistics(self):
         stats = (
@@ -241,17 +225,15 @@ class Economy:
 
         # Individuals spend money
         for individual in self.individuals:
-            if random.random() < np.tanh(individual.wallet / Config.SPENDING_PROBABILITY_FACTOR):
+            if random.random() < np.tanh(individual.funds / Config.SPENDING_PROBABILITY_FACTOR):
                 chosen_product = individual.decide_purchase(self.get_all_products())
                 if chosen_product:
                     individual.make_purchase(chosen_product)
                     # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
 
         for company in self.companies:
-            # Add revenue to funds
-            company.funds += company.revenue
             # Pay dividends from profit to owner
-            company.pay_dividends()
+            company.transfer_funds_to(company.owner, company.dividend)
 
             # Check for bankruptcy
             if company.check_bankruptcy():
@@ -260,8 +242,7 @@ class Economy:
                 continue
             # Pays employees salary
             for employee in company.employees:
-                company.funds -= employee.salary
-                employee.receive_money(employee.salary)
+                company.transfer_funds_to(employee, employee.salary)
             if company.funds < 0:
                 print('negative funds:', company.funds)
 
@@ -273,7 +254,7 @@ class Economy:
         # Start new companies
         for individual in self.individuals:
             # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.wallet > Config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
+            if individual.funds > Config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
@@ -284,10 +265,10 @@ class Economy:
         self.stats.collect_statistics(self)
 
     def start_new_company(self, individual: Individual):
-        if individual.wallet > Config.MIN_WEALTH_FOR_STARTUP:
-            initial_funds = individual.wallet * Config.STARTUP_COST_FACTOR
-            individual.spend(initial_funds)
-            new_company = Company(individual, initial_funds)
+        if individual.funds > Config.MIN_WEALTH_FOR_STARTUP:
+            initial_funds = individual.funds * Config.STARTUP_COST_FACTOR
+            new_company = Company(individual)
+            individual.transfer_funds_to(new_company, initial_funds)
             self.companies.append(new_company)
             self.all_companies.append(new_company)
             self.stats.num_new_companies += 1  # Increment new company counter
@@ -319,7 +300,10 @@ class EconomyStats:
 
     def __init__(self):
         self.step = 0
-        self.total_money = []
+        self.total_money = 0
+        self.num_bankruptcies = 0
+        self.num_new_companies = 0
+
         self.individual_wealth_gini = []
         self.avg_individual_wealth = []
         self.sum_individual_wealth = []
@@ -330,8 +314,7 @@ class EconomyStats:
         self.avg_product_price = []
         self.bankruptcies_over_time = []
         self.new_companies_over_time = []
-        self.num_bankruptcies = 0  # Initialize counter for bankruptcies
-        self.num_new_companies = 0  # Initialize counter for new companies
+
         self.all_company_funds: List[List[float]] = []
         self.all_individual_funds: List[List[float]] = []
         self.all_product_prices: List[List[float]] = []
@@ -339,7 +322,7 @@ class EconomyStats:
 
     @property
     def dict_scalar_attributes(self) -> Dict:
-        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, int)}
+        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, (int, float))}
     
     @property
     def dict_histogram_attributes(self) -> Dict:
@@ -362,23 +345,24 @@ class EconomyStats:
             pickle.dump(self, f)
 
     def collect_statistics(self, economy: Economy):
-        individual_wealths = [ind.wallet for ind in economy.individuals]
+        individual_wealths = [ind.funds for ind in economy.individuals]
         company_wealths = [comp.funds for comp in economy.companies]
         employed = len([ind for ind in economy.individuals if ind.employer])
-
+        
         self.individual_wealth_gini.append(self.calculate_gini(individual_wealths))
         self.avg_individual_wealth.append(np.mean(individual_wealths))
         self.sum_individual_wealth.append(np.sum(individual_wealths))
         self.sum_company_wealth.append(np.sum(company_wealths))
-        self.total_money.append(self.sum_individual_wealth[-1] + self.sum_company_wealth[-1])
         self.num_companies.append(len(economy.companies))
         self.unemployment_rate.append(1 - employed / len(economy.individuals))
         self.bankruptcies_over_time.append(self.num_bankruptcies)  # Track bankruptcies
         self.new_companies_over_time.append(self.num_new_companies)  # Track new companies
 
+        self.total_money = round(self.sum_individual_wealth[-1] + self.sum_company_wealth[-1])
+
         to_low_precision = lambda x: float(np.float32(x))
         self.all_company_funds.append([to_low_precision(c.funds) for c in economy.companies])
-        self.all_individual_funds.append([to_low_precision(i.wallet) for i in economy.individuals])
+        self.all_individual_funds.append([to_low_precision(i.funds) for i in economy.individuals])
         self.all_product_prices.append([to_low_precision(c.product.price) for c in economy.companies])
         self.all_salaries.append([to_low_precision(e.salary) for e in economy.individuals if e.employer])
 
@@ -388,8 +372,6 @@ class EconomyStats:
         else:
             self.avg_product_quality.append(0)
             self.avg_product_price.append(0)
-        
-        print([c.product.price for c in economy.companies if c.product.price < 0])
 
 
 def run_simulation(
@@ -409,7 +391,6 @@ def run_simulation(
     for _ in tqdm(range(num_steps-economy.stats.step), desc="Simulating economy"):
         economy.simulate_step()
         # economy.all_companies[0].print_statistics()
-        print(f'{economy.stats.total_money[-1]=}')
         economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
@@ -479,7 +460,7 @@ def print_summary(economy: Economy):
     print(f"Total bankruptcies: {economy.stats.num_bankruptcies}")
     print(f"Total new companies: {economy.stats.num_new_companies}")
 
-    wealth_percentiles = np.percentile([ind.wallet for ind in economy.individuals], [25, 50, 75, 90, 99])
+    wealth_percentiles = np.percentile([ind.funds for ind in economy.individuals], [25, 50, 75, 90, 99])
     print("\nWealth Distribution:")
     print(f"25th percentile: {wealth_percentiles[0]:.2f}")
     print(f"Median: {wealth_percentiles[1]:.2f}")
