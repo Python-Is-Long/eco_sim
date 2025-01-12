@@ -3,16 +3,24 @@ import numpy as np
 from typing import Union
 
 
-def generate_name():
-    """Returns a random uuid."""
-    return uuid.uuid4()
+class NamedObject():
+    """A class that assigns a unique name to each subclass."""
+    def __init__(self):
+        self.__init_subclass__()
+    
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.name = uuid.uuid4()
 
 class FundsObject():
-    """A class to represent an object with funds.
-    """
+    """A class that manages funds for a subclass."""
     def __init__(self, starting_funds: Union[int, float]=0, funds_precision: object=np.float64):
-        self.funds_precision = funds_precision
-        self.funds = funds_precision(starting_funds)
+        self.__init_subclass__(starting_funds, funds_precision)
+    
+    def __init_subclass__(cls, starting_funds: Union[int, float]=0, funds_precision: object=np.float64, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.funds_precision = funds_precision
+        cls.funds = funds_precision(starting_funds)
 
     @staticmethod
     def _warn_different_precision():
@@ -59,14 +67,14 @@ class FundsObject():
         account.modify_funds(-amount)
         self.modify_funds(amount)
         return True
-
+        
 
 if __name__ == '__main__':
     funds1 = FundsObject(100)
     funds2 = FundsObject(50)
 
-    print(funds1)
-    print(funds2)
-    funds1.transfer_funds_from(25, funds2)
-    print(funds1)
-    print(funds2)
+    print(funds1.funds)
+    print(funds2.funds)
+    funds1.transfer_funds_from(funds2, 25)
+    print(funds1.funds)
+    print(funds2.funds)

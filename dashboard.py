@@ -3,7 +3,7 @@ from dash import html, dcc
 from dash.dependencies import Input, Output
 import plotly.graph_objs as go
 import pickle
-import os
+import time
 from datetime import datetime
 from sim import EconomyStats
 
@@ -38,7 +38,14 @@ app.layout = html.Div([
 # Function to load data from the pickle file
 def load_data():
     with open(PICKLE_FILE_PATH, 'rb') as f:
-        data_class = pickle.load(f)
+        for i in range(10):
+            try:
+                data_class = pickle.load(f)
+                break
+            except pickle.UnpicklingError:
+                continue
+        else:
+            return None
     return data_class
 
 # Functions to get scalar and time-series attributes
@@ -59,6 +66,8 @@ def get_scalar_attributes(data_class):
 )
 def update_dashboard(n):
     economy_stats: EconomyStats = load_data()
+    assert economy_stats, 'Unable to load data from the pickle file!'
+        
     last_update = 'Last Update: {}'.format(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
     # Get attributes

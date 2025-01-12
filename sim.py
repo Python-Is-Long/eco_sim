@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from utils.genericObjects import generate_name, FundsObject
+from utils.genericObjects import NamedObject, FundsObject
 
 
 # Configuration
@@ -44,17 +44,12 @@ class Product:
     company: 'Company'
     name: str
 
-class Individual(FundsObject):
+class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
     def __init__(self, talent: float, initial_funds: float):
-        self.funds_precision = Config.FUNDS_PRECISION
-        self.funds = self.funds_precision(initial_funds)
-
-        self.name = generate_name()
+        self.set_funds(initial_funds)
         self.talent = talent
         self.employer: Optional[Company] = None
         self.salary = self.funds_precision(0)
-
-        self.set_funds(initial_funds)
 
     def make_purchase(self, product: Product):
         self.transfer_funds_to(product.company, product.price)
@@ -90,12 +85,9 @@ class Individual(FundsObject):
                     break
 
 
-class Company(FundsObject):
+class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
     def __init__(self, owner: Individual, initial_funds: float=0):
-        self.funds_precision = Config.FUNDS_PRECISION
-        self.funds = self.funds_precision(initial_funds)
-
-        self.name = uuid.uuid4()
+        self.set_funds(initial_funds)
         self.owner = owner
         
         self.employees: List[Individual] = []
@@ -311,7 +303,7 @@ class EconomyStats:
         self.total_money = 0
         self.num_bankruptcies = 0
         self.num_new_companies = 0
-        
+
         self.individual_wealth_gini = []
         self.avg_individual_wealth = []
         self.sum_individual_wealth = []
@@ -330,7 +322,7 @@ class EconomyStats:
 
     @property
     def dict_scalar_attributes(self) -> Dict:
-        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, int)}
+        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, (int, float))}
     
     @property
     def dict_histogram_attributes(self) -> Dict:
@@ -366,7 +358,7 @@ class EconomyStats:
         self.bankruptcies_over_time.append(self.num_bankruptcies)  # Track bankruptcies
         self.new_companies_over_time.append(self.num_new_companies)  # Track new companies
 
-        self.total_money = self.sum_individual_wealth[-1] + self.sum_company_wealth[-1]
+        self.total_money = round(self.sum_individual_wealth[-1] + self.sum_company_wealth[-1])
 
         to_low_precision = lambda x: float(np.float32(x))
         self.all_company_funds.append([to_low_precision(c.funds) for c in economy.companies])
@@ -380,8 +372,6 @@ class EconomyStats:
         else:
             self.avg_product_quality.append(0)
             self.avg_product_price.append(0)
-        
-        print([c.product.price for c in economy.companies if c.product.price < 0])
 
 
 def run_simulation(
@@ -401,7 +391,6 @@ def run_simulation(
     for _ in tqdm(range(num_steps-economy.stats.step), desc="Simulating economy"):
         economy.simulate_step()
         # economy.all_companies[0].print_statistics()
-        print(f'{economy.stats.total_money[-1]=}')
         economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
