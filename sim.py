@@ -16,7 +16,7 @@ from utils.genericObjects import NamedObject, FundsObject
 class Config:
     # Individual settings
     INITIAL_FUNDS_INDIVIDUAL = 1000  # Initial funds for individuals
-    FUNDS_PRECISION = np.float64
+    FUNDS_PRECISION = np.float64 # Object used to store funds (int or float like)
     TALENT_MEAN = 100  # Mean talent (IQ-like)
     TALENT_STD = 15  # Standard deviation of talent
 
@@ -29,73 +29,111 @@ class Config:
     PROFIT_MARGIN_FOR_HIRING = 1.5  # Higher margin for hiring
     BANKRUPTCY_THRESHOLD = 1000  # Companies can go slightly negative before bankruptcy
 
-    # Spending settings
-    SPENDING_PROBABILITY_FACTOR = 5000  # Wealth factor for spending probability
-
     # Entrepreneurship settings
     STARTUP_COST_FACTOR = 0.5  # Fraction of wealth used to start a company
     MIN_WEALTH_FOR_STARTUP = 10000  # Minimum wealth to start a company
 
+    # Math
+    EPSILON = 1e-6
 
-@dataclass
-class Product:
-    quality: float
-    price: float
-    company: 'Company'
-    name: str
+
+class Product(NamedObject):
+    def __init__(self, company: 'Company', price: Union[int, float]=1, quality: Union[int, float]=1):
+        self.quality = quality
+        self.price = price
+        self.company = company
+    def __repr__(self):
+        return f"{__class__.__name__}({self.__dict__})"
+
+
+class ProductGroup(tuple):
+    def __new__(cls, products):
+        # Check if all elements is a valid product
+        if not all(isinstance(p, Product) for p in products):
+            raise ValueError("All elements in the product group must be of type Product.")
+
+        # Create a new instance of the tuple
+        return super().__new__(cls, products)
+        
+    def __init__(self, products: Tuple[Product]):
+        # self.quality_min = min(self.all_quality)
+        self.quality_max = max(self.all_quality)
+        # self.quality_range = self.quality_max - self.quality_min
+    
+    @property
+    def all_quality(self) -> tuple:
+        return tuple(p.quality for p in self)
+    @property
+    def all_price(self) -> tuple:
+        return tuple(p.quality for p in self)
+
+    def get_quality_normalized(self, product: Product) -> float:
+        return product.quality / self.quality_max
+
 
 class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
     def __init__(self, talent: float, initial_funds: float):
         self.set_funds(initial_funds)
         self.talent = talent
         self.employer: Optional[Company] = None
-        self.salary = self.funds_precision(0)
+        self.salary = Config.FUNDS_PRECISION(0)
+        self.owning_company: list[Company] = []
+
+        self.expenses = 0
+
+    @property
+    def income(self):
+        return self.salary + sum(c.dividend for c in self.owning_company)
 
     def make_purchase(self, product: Product):
         self.transfer_funds_to(product.company, product.price)
         product.company.revenue += product.price
 
-    @staticmethod
-    def score_product(product: Product, wealth_factor) -> float:
-        quality_weight = 0.5 + 0.5 * wealth_factor
-        price_weight = 1.5 - 1.5 * wealth_factor
-        return quality_weight * product.quality - price_weight * product.price
+    def score_product(self, product: Product) -> float:
+        return np.tanh((self.funds + self.income) / product.price) * product.quality if self.can_afford(product.price) else 0
 
-    def decide_purchase(self, products: List[Product]) -> Optional[Product]:
+    def decide_purchase(self, products: ProductGroup) -> Optional[Product]:
         if not products:
             return None
+        
+        product_scores = np.array([self.score_product(p) for p in products])
+        sum_product_scores = product_scores.sum()
 
-        # Wealthy individuals care more about quality than price
-        wealth_factor = np.tanh(self.funds / Config.SPENDING_PROBABILITY_FACTOR)
-
-        scored_products = [(self.score_product(p, wealth_factor), p) for p in products]
-        if not scored_products:
-            return None
-        # Filter out all unaffordable products
-        scored_products = [(score, product) for score, product in scored_products if self.can_afford(product.price)]
-        if not scored_products:
+        if sum_product_scores == 0:
             return None
 
-        return max(scored_products, key=lambda x: x[0])[1]
+        chosen_product: Product = np.random.choice(products, p=product_scores/sum_product_scores)
+        return chosen_product
 
     def find_job(self, companies: List['Company']):
         if self.employer is None:
             for company in companies:
                 if company.hire_employee(self, self.talent * Config.SALARY_FACTOR):
                     break
+    
+    def estimate_runout(self) -> Optional[int]:
+        # Estimate how many time steps until the individual runs out of funds
+        est = self.funds / (self.income - self.expenses)
+        return int(est) if est > 0 else None
+
+    def self_evaluate(self, products: List[Product]) -> float:
+        # Evaluation based on how much funds the individual has and the product that they are purchasing
+        pass
 
 
 class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
     def __init__(self, owner: Individual, initial_funds: float=0):
         self.set_funds(initial_funds)
         self.owner = owner
+        owner.owning_company.append(self)
         
         self.employees: List[Individual] = []
-        self.product = Product(quality=1, price=1, company=self, name=uuid.uuid4())
-        self.revenue = self.funds_precision(0)
+        self.product = Product(self)
+        self.revenue = Config.FUNDS_PRECISION(0)
         self.suppliers: List[Company] = []
         self.max_employees = random.randint(Config.MIN_COMPANY_SIZE, Config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
+        self.profit_margin = 0.2    # (1 + profit margin) * price * sales = revenue  TODO: smart margin
 
     @property
     def total_salary(self):
@@ -130,11 +168,14 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
         supplier_quality = sum(supplier.product.quality for supplier in self.suppliers)
         return base_quality + supplier_quality * 0.5
 
-    def update_product_attributes(self):
+    def estimate_sales(self, population: int, company_count: int) -> float:
+        # TODO: Smarter estimate sales 
+        return population / company_count
+
+    def update_product_attributes(self, population: int, company_count: int):
         # Update product quality and price
         self.product.quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
-        self.product.price = max(1, self.costs * 1.2)  # Ensure price >= 1
-
+        self.product.price = max(1, self.costs * (1 + self.profit_margin)) / self.estimate_sales(population=population, company_count=company_count)  # Ensure price >= 1
 
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
         if self.funds >= salary and len(self.employees) < self.max_employees:
@@ -157,10 +198,10 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
                 self.fire_employee(employee)
             # The owner runs with leftover company funds
             self.transfer_funds_to(self.owner, self.funds)
+            self.owner.owning_company.remove(self)
             self.bankruptcy = True
             return True
         return False
-    
 
     def print_statistics(self):
         stats = (
@@ -170,7 +211,7 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
             f"Total Salary: {sum(emp.salary for emp in self.employees):.2f}, "
             f"Suppliers: {len(self.suppliers)}, "
             f"Product Quality: {self.product.quality:.2f}, Product Price: {self.product.price:.2f}, "
-            f"Costs: {self.costs:.2f}, Revenue: {self.revenue:.2f}, Dividands: {self.dividend:.2f}, "
+            f"Costs: {self.costs:.2f}, Revenue: {self.revenue:.2f}, Dividends: {self.dividend:.2f}, "
             f"Bankruptcy: {self.bankruptcy}"
         )
         print(stats)
@@ -213,23 +254,25 @@ class Economy:
 
         return companies
 
-    def get_all_products(self):
-        return [company.product for company in self.companies]
+    def get_all_products(self) -> ProductGroup:
+        return ProductGroup([company.product for company in self.companies])
 
     def simulate_step(self):
         self.stats.step += 1
         # Update company product prices and quality and reset revenue
         for company in self.companies:
-            company.update_product_attributes()
+            company.update_product_attributes(population=len(self.individuals), company_count=len(self.companies))
             company.revenue = 0
+
+        all_products = self.get_all_products()
 
         # Individuals spend money
         for individual in self.individuals:
-            if random.random() < np.tanh(individual.funds / Config.SPENDING_PROBABILITY_FACTOR):
-                chosen_product = individual.decide_purchase(self.get_all_products())
-                if chosen_product:
-                    individual.make_purchase(chosen_product)
-                    # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
+            chosen_product = individual.decide_purchase(all_products)
+            if chosen_product:
+                individual.make_purchase(chosen_product)
+                individual.expenses = chosen_product.price
+                # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
 
         for company in self.companies:
             # Pay dividends from profit to owner
