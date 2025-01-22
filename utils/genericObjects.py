@@ -15,11 +15,12 @@ class NamedObject():
 class FundsObject():
     """A class that manages funds for a subclass."""
     def __init__(self, starting_funds: Union[int, float]=0, funds_precision: object=np.float64):
-        self.__init_subclass__(starting_funds, funds_precision)
+        self._funds_precision = funds_precision
+        self.funds = funds_precision(starting_funds)
     
     def __init_subclass__(cls, starting_funds: Union[int, float]=0, funds_precision: object=np.float64, **kwargs):
         super().__init_subclass__(**kwargs)
-        cls.funds_precision = funds_precision
+        cls._funds_precision = funds_precision
         cls.funds = funds_precision(starting_funds)
 
     @staticmethod
@@ -28,11 +29,11 @@ class FundsObject():
 
     def set_funds(self, amount: Union[int, float]):
         """Set funds to a value."""
-        self.funds = self.funds_precision(amount)
+        self.funds = self._funds_precision(amount)
     
     def modify_funds(self, amount: Union[int, float]):
         """Modify funds by a value."""
-        self.funds += self.funds_precision(amount)
+        self.funds += self._funds_precision(amount)
     
     def can_afford(self, amount: Union[int, float]) -> bool:
         """Check if current funds is above a specified amount."""
@@ -46,7 +47,7 @@ class FundsObject():
             return False
         
         # Warning when transferring funds to an account with a different precision
-        if self.funds_precision != object.funds_precision:
+        if self._funds_precision != object._funds_precision:
             self._warn_different_precision()
         
         self.modify_funds(-amount)
@@ -61,7 +62,7 @@ class FundsObject():
             return False
         
         # Warning when transferring funds to an account with a different precision
-        if self.funds_precision != account.funds_precision:
+        if self._funds_precision != account._funds_precision:
             self._warn_different_precision()
         
         account.modify_funds(-amount)
