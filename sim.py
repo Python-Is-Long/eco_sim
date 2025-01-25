@@ -1,9 +1,7 @@
 import os
 import pickle
 import random
-import uuid
-from dataclasses import dataclass
-from typing import List, Optional, Union, Any, Tuple, Dict
+from typing import List, Optional, Union, Any, Iterable, Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,13 +13,13 @@ from utils.genericObjects import NamedObject, FundsObject
 # Configuration
 class Config:
     # Individual settings
-    INITIAL_FUNDS_INDIVIDUAL = 1000  # Initial funds for individuals
+    INITIAL_FUNDS_INDIVIDUAL = 5000  # Initial funds for individuals
     FUNDS_PRECISION = np.float64 # Object used to store funds (int or float like)
     TALENT_MEAN = 100  # Mean talent (IQ-like)
     TALENT_STD = 15  # Standard deviation of talent
 
     # Company settings
-    INITIAL_FUNDS_COMPANY = 5000000  # Increased initial funds
+    INITIAL_FUNDS_COMPANY = 100000  # Increased initial funds
     MIN_COMPANY_SIZE = 5  # Minimum initial company size
     MAX_COMPANY_SIZE = 20  # Maximum initial company size
     SALARY_FACTOR = 100  # Salary = talent * SALARY_FACTOR
@@ -38,7 +36,9 @@ class Config:
 
 
 class Product(NamedObject):
-    def __init__(self, company: 'Company', price: Union[int, float]=1, quality: Union[int, float]=1):
+    def __init__(self, company: 'Company', price: Union[int, float] = 1, quality: Union[int, float] = 1):
+        super().__init__()
+
         self.quality = quality
         self.price = price
         self.company = company
@@ -47,7 +47,7 @@ class Product(NamedObject):
 
 
 class ProductGroup(tuple):
-    def __new__(cls, products):
+    def __new__(cls, products: Iterable[Product]):
         # Check if all elements is a valid product
         if not all(isinstance(p, Product) for p in products):
             raise ValueError("All elements in the product group must be of type Product.")
@@ -55,7 +55,7 @@ class ProductGroup(tuple):
         # Create a new instance of the tuple
         return super().__new__(cls, products)
         
-    def __init__(self, products: Tuple[Product]):
+    def __init__(self, products: Iterable[Product]):
         # self.quality_min = min(self.all_quality)
         self.quality_max = max(self.all_quality)
         # self.quality_range = self.quality_max - self.quality_min
@@ -71,9 +71,12 @@ class ProductGroup(tuple):
         return product.quality / self.quality_max
 
 
-class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
+class Individual(FundsObject, NamedObject):
     def __init__(self, talent: float, initial_funds: float):
-        self.set_funds(initial_funds)
+        super().__init__(
+            starting_funds=initial_funds,
+            funds_precision=Config.FUNDS_PRECISION
+        )
         self.talent = talent
         self.employer: Optional[Company] = None
         self.salary = Config.FUNDS_PRECISION(0)
@@ -121,8 +124,13 @@ class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISIO
         pass
 
 
-class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
-    def __init__(self, owner: Individual, initial_funds: float=0):
+class Company(FundsObject, NamedObject):
+    def __init__(self, owner: Individual, initial_funds: float = 0):
+        super().__init__(
+            starting_funds=initial_funds,
+            funds_precision=Config.FUNDS_PRECISION
+        )
+
         self.set_funds(initial_funds)
         self.owner = owner
         owner.owning_company.append(self)
