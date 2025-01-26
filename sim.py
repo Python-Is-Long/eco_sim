@@ -1,7 +1,7 @@
 import os
 import pickle
 import random
-from typing import List, Optional, Union, Any, Iterable, Dict
+from typing import List, Optional, Union, Any, Iterable, Dict, Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,27 +12,35 @@ from utils.genericObjects import NamedObject, FundsObject
 
 # Configuration
 class Config:
+    """Default Settings"""
+    # Simulation settings
+    NUM_INDIVIDUAL: int = 100
+    NUM_COMPANY: int = 5
+    FUNDS_PRECISION: Callable = np.float64  # Object used to store funds (int or float like)
+
     # Individual settings
-    INITIAL_FUNDS_INDIVIDUAL = 5000  # Initial funds for individuals
-    FUNDS_PRECISION = np.float64 # Object used to store funds (int or float like)
-    TALENT_MEAN = 100  # Mean talent (IQ-like)
-    TALENT_STD = 15  # Standard deviation of talent
+    INITIAL_FUNDS_INDIVIDUAL: Union[int, float] = 5000  # Initial funds for individuals
+    TALENT_MEAN: Union[int, float] = 100  # Mean talent (IQ-like)
+    TALENT_STD: Union[int, float] = 15  # Standard deviation of talent
 
     # Company settings
-    INITIAL_FUNDS_COMPANY = 100000  # Increased initial funds
-    MIN_COMPANY_SIZE = 5  # Minimum initial company size
-    MAX_COMPANY_SIZE = 20  # Maximum initial company size
-    SALARY_FACTOR = 100  # Salary = talent * SALARY_FACTOR
-    DIVIDEND_RATE = 0.1  # 10% of profit paid as dividends
-    PROFIT_MARGIN_FOR_HIRING = 1.5  # Higher margin for hiring
-    BANKRUPTCY_THRESHOLD = 1000  # Companies can go slightly negative before bankruptcy
+    INITIAL_FUNDS_COMPANY: Union[int, float] = 100000  # Increased initial funds
+    MIN_COMPANY_SIZE: int = 5  # Minimum initial company size
+    MAX_COMPANY_SIZE: int = 20  # Maximum initial company size
+    SALARY_FACTOR: Union[int, float] = 100  # Salary = talent * SALARY_FACTOR
+    DIVIDEND_RATE: float = 0.1  # 10% of profit paid as dividends
+    PROFIT_MARGIN_FOR_HIRING: Union[int, float] = 1.5  # Higher margin for hiring
 
     # Entrepreneurship settings
-    STARTUP_COST_FACTOR = 0.5  # Fraction of wealth used to start a company
-    MIN_WEALTH_FOR_STARTUP = 10000  # Minimum wealth to start a company
+    STARTUP_COST_FACTOR: float = 0.5  # Fraction of wealth used to start a company
+    MIN_WEALTH_FOR_STARTUP: Union[int, float] = 10000  # Minimum wealth to start a company
 
     # Math
     EPSILON = 1e-6
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 class Product(NamedObject):
@@ -56,9 +64,8 @@ class ProductGroup(tuple):
         return super().__new__(cls, products)
         
     def __init__(self, products: Iterable[Product]):
-        # self.quality_min = min(self.all_quality)
-        self.quality_max = max(self.all_quality)
-        # self.quality_range = self.quality_max - self.quality_min
+        if self:
+            self.quality_max = max(self.all_quality)
     
     @property
     def all_quality(self) -> tuple:
@@ -68,18 +75,22 @@ class ProductGroup(tuple):
         return tuple(p.quality for p in self)
 
     def get_quality_normalized(self, product: Product) -> float:
+        if not self:
+            raise ValueError("Product group is empty.")
+
         return product.quality / self.quality_max
 
 
 class Individual(FundsObject, NamedObject):
-    def __init__(self, talent: float, initial_funds: float):
+    def __init__(self, talent: float, initial_funds: float, configuration: Config=Config):
+        self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
-            funds_precision=Config.FUNDS_PRECISION
+            funds_precision=configuration.FUNDS_PRECISION
         )
         self.talent = talent
         self.employer: Optional[Company] = None
-        self.salary = Config.FUNDS_PRECISION(0)
+        self.salary = configuration.FUNDS_PRECISION(0)
         self.owning_company: list[Company] = []
 
         self.expenses = 0
@@ -111,7 +122,7 @@ class Individual(FundsObject, NamedObject):
     def find_job(self, companies: List['Company']):
         if self.employer is None:
             for company in companies:
-                if company.hire_employee(self, self.talent * Config.SALARY_FACTOR):
+                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR):
                     break
     
     def estimate_runout(self) -> Optional[int]:
@@ -125,10 +136,11 @@ class Individual(FundsObject, NamedObject):
 
 
 class Company(FundsObject, NamedObject):
-    def __init__(self, owner: Individual, initial_funds: float = 0):
+    def __init__(self, owner: Individual, initial_funds: float = 0, configuration: Config=Config()):
+        self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
-            funds_precision=Config.FUNDS_PRECISION
+            funds_precision=self.config.FUNDS_PRECISION
         )
 
         self.set_funds(initial_funds)
@@ -137,9 +149,9 @@ class Company(FundsObject, NamedObject):
         
         self.employees: List[Individual] = []
         self.product = Product(self)
-        self.revenue = Config.FUNDS_PRECISION(0)
+        self.revenue = self.config.FUNDS_PRECISION(0)
         self.suppliers: List[Company] = []
-        self.max_employees = random.randint(Config.MIN_COMPANY_SIZE, Config.MAX_COMPANY_SIZE)
+        self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
         self.profit_margin = 0.2    # (1 + profit margin) * price * sales = revenue  TODO: smart margin
 
@@ -161,7 +173,7 @@ class Company(FundsObject, NamedObject):
 
     @property
     def dividend(self):
-        return self.profit * Config.DIVIDEND_RATE if self.profit > 0 else 0
+        return self.profit * self.config.DIVIDEND_RATE if self.profit > 0 else 0
 
     def calculate_product_quality(self) -> float:
         if not self.employees:
@@ -226,16 +238,18 @@ class Company(FundsObject, NamedObject):
 
 
 class Economy:
-    def __init__(self, num_individuals: int, num_companies: int):
-        self.individuals = self._create_individuals(num_individuals)
-        self.companies = self._create_companies(num_companies)
+    def __init__(self, config: Config=Config):
+        self.config = config
+
+        self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
+        self.companies = self._create_companies(self.config.NUM_COMPANY)
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
-        talents = np.random.normal(Config.TALENT_MEAN, Config.TALENT_STD, num_individuals)
-        initial_funds = np.random.exponential(Config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
-        return [Individual(t, f) for t, f in zip(talents, initial_funds)]
+        talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
+        initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
+        return [Individual(t, f, self.config) for t, f in zip(talents, initial_funds)]
 
     def _create_companies(self, num_companies: int) -> List[Company]:
         companies = []
@@ -244,7 +258,7 @@ class Economy:
         for _ in range(num_companies):
             owner = random.choice(list(available_workers))
             available_workers.remove(owner)
-            initial_funds = np.random.exponential(Config.INITIAL_FUNDS_COMPANY)
+            initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_COMPANY)
             company = Company(owner, initial_funds)
 
             # Hire initial employees
@@ -305,7 +319,7 @@ class Economy:
         # Start new companies
         for individual in self.individuals:
             # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > Config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
+            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
@@ -316,8 +330,8 @@ class Economy:
         self.stats.collect_statistics(self)
 
     def start_new_company(self, individual: Individual):
-        if individual.funds > Config.MIN_WEALTH_FOR_STARTUP:
-            initial_funds = individual.funds * Config.STARTUP_COST_FACTOR
+        if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP:
+            initial_funds = individual.funds * self.config.STARTUP_COST_FACTOR
             new_company = Company(individual)
             individual.transfer_funds_to(new_company, initial_funds)
             self.companies.append(new_company)
@@ -325,12 +339,12 @@ class Economy:
             self.stats.num_new_companies += 1  # Increment new company counter
 
     def adjust_workforce(self, company: Company):
-        if company.revenue > company.costs * Config.PROFIT_MARGIN_FOR_HIRING:
+        if company.revenue > company.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
             # Hire new employees
             potential_employees = [ind for ind in self.individuals if ind.employer is None]
             if potential_employees:
                 new_employee = max(potential_employees, key=lambda x: x.talent)
-                company.hire_employee(new_employee, new_employee.talent * Config.SALARY_FACTOR)
+                company.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
         elif company.revenue < company.costs:
             # Fire employees
             if company.employees:
@@ -438,7 +452,10 @@ def run_simulation(
         economy = Economy.load_state("economy_simulation.pkl")
         print(f"Resuming simulation from saved state: {state_pickle_path}")
     else:
-        economy = Economy(num_individuals, num_companies)
+        economy = Economy(Config(
+            NUM_INDIVIDUAL=num_individuals,
+            NUM_COMPANY=num_companies,
+        ))
     for _ in tqdm(range(num_steps-economy.stats.step), desc="Simulating economy"):
         economy.simulate_step()
         # economy.all_companies[0].print_statistics()
@@ -526,8 +543,8 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=10000,
-        num_companies=50,
+        num_individuals=100,
+        num_companies=5,
         num_steps=1000,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
