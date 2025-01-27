@@ -1,9 +1,11 @@
 import random
 from typing import List, Optional, Union, Iterable, Callable
 
+import mesa
 import numpy as np
+from mesa.agent import Agent
 
-from .genericObjects import NamedObject, FundsObject
+from utils.genericObjects import FundsObject
 
 
 class Config:
@@ -11,6 +13,7 @@ class Config:
     # Simulation settings
     NUM_INDIVIDUAL: int = 100
     NUM_COMPANY: int = 5
+    SEED: int = 42
     FUNDS_PRECISION: Callable = np.float64  # Object used to store funds (int or float like)
 
     # Individual settings
@@ -38,7 +41,7 @@ class Config:
             setattr(self, key, value)
 
 
-class Product(NamedObject):
+class Product():
     def __init__(self, company: 'Company', price: Union[int, float] = 1, quality: Union[int, float] = 1):
         super().__init__()
 
@@ -77,10 +80,11 @@ class ProductGroup(tuple):
         return product.quality / self.quality_max
 
 
-class Individual(FundsObject, NamedObject):
-    def __init__(self, talent: float, initial_funds: float, configuration: Config = Config):
+class Individual(FundsObject, Agent):
+    def __init__(self, model: 'mesa.model', talent: float, initial_funds: float, configuration: Config = Config):
         self.config = configuration
         super().__init__(
+            model=model,
             starting_funds=initial_funds,
             funds_precision=configuration.FUNDS_PRECISION
         )
@@ -95,9 +99,14 @@ class Individual(FundsObject, NamedObject):
     def income(self):
         return self.salary + sum(c.dividend for c in self.owning_company)
 
-    def make_purchase(self, product: Product):
-        self.transfer_funds_to(product.company, product.price)
-        product.company.revenue += product.price
+    def estimate_runout(self) -> Optional[int]:
+        # Estimate how many time steps until the individual runs out of funds
+        est = self.funds / (self.income - self.expenses)
+        return int(est) if est > 0 else None
+
+    def self_evaluate(self, products: List[Product]) -> float:
+        # Evaluation based on how much funds the individual has and the product that they are purchasing
+        pass
 
     def score_product(self, product: Product) -> float:
         return np.tanh((self.funds + self.income) / product.price) * product.quality if self.can_afford(
@@ -116,26 +125,33 @@ class Individual(FundsObject, NamedObject):
         chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
         return chosen_product
 
+    def purchase_product(self, products: ProductGroup):
+        target_product = self.decide_purchase(products)
+        if target_product is not None:
+            self.transfer_funds_to(target_product.company, target_product.price)
+            target_product.company.revenue += target_product.price
+            self.expenses = target_product.price
+
     def find_job(self, companies: List['Company']):
         if self.employer is None:
             for company in companies:
                 if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR):
                     break
 
-    def estimate_runout(self) -> Optional[int]:
-        # Estimate how many time steps until the individual runs out of funds
-        est = self.funds / (self.income - self.expenses)
-        return int(est) if est > 0 else None
+    def start_new_company(self):
+        # TODO: Instead of random chance of starting a new company, consider the current market demands
+        if random.random() < 0.01:
+            initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
+            new_company = Company(model=self.model, owner=self)
+            self.transfer_funds_to(new_company, initial_funds)
+            self.model.stats.num_new_companies += 1  # Increment new company counter
 
-    def self_evaluate(self, products: List[Product]) -> float:
-        # Evaluation based on how much funds the individual has and the product that they are purchasing
-        pass
 
-
-class Company(FundsObject, NamedObject):
-    def __init__(self, owner: Individual, initial_funds: float = 0, configuration: Config = Config):
+class Company(FundsObject, Agent):
+    def __init__(self, model: 'mesa.model', owner: Individual, initial_funds: float = 0, configuration: Config = Config):
         self.config = configuration
         super().__init__(
+            model=model,
             starting_funds=initial_funds,
             funds_precision=self.config.FUNDS_PRECISION
         )
@@ -189,12 +205,6 @@ class Company(FundsObject, NamedObject):
         # TODO: Smarter estimate sales
         return population / company_count
 
-    def update_product_attributes(self, population: int, company_count: int):
-        # Update product quality and price
-        self.product.quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
-        self.product.price = (max(1, self.costs * (1 + self.profit_margin)) /
-                              self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
-
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
         if self.funds >= salary and len(self.employees) < self.max_employees:
             candidate.employer = self
@@ -209,6 +219,26 @@ class Company(FundsObject, NamedObject):
             employee.employer = None
             employee.salary = 0.0
 
+    def update_product_attributes(self):
+        population = len(self.model.agents_by_type[Individual])
+        company_count = len(self.model.agents_by_type[Company])
+        # Update product quality and price
+        self.product.quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
+        self.product.price = (max(1, self.costs * (1 + self.profit_margin)) /
+                              self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
+
+    def adjust_workforce(self, unemployed: list[Individual]):
+        if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
+            # Hire new employees
+            if unemployed:
+                new_employee = max(unemployed, key=lambda x: x.talent)
+                self.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
+        elif self.revenue < self.costs:
+            # Fire employees
+            if self.employees:
+                employee_to_fire = random.choice(self.employees)
+                self.fire_employee(employee_to_fire)
+
     def check_bankruptcy(self) -> bool:
         if self.funds < self.costs:
             # Fire all employees
@@ -221,10 +251,20 @@ class Company(FundsObject, NamedObject):
             return True
         return False
 
+    def do_finances(self):
+        # Pay dividends from profit to owner
+        self.transfer_funds_to(self.owner, self.dividend)
+        # Check for bankruptcy
+        if self.check_bankruptcy():
+            self.model.stats.num_bankruptcies += 1
+            self.remove()
+        # Pays employees salary
+        [e.transfer_funds_from(self, e.salary) for e in self.employees]
+
     def print_statistics(self):
         stats = (
-            f"UUID: {self.name}, "
-            f"Owner: {self.owner.name}, Funds: {self.funds:.2f}, "
+            f"Agent ID: {self.unique_id}, "
+            f"Owner ID: {self.owner.unique_id}, Funds: {self.funds:.2f}, "
             f"Employees: {len(self.employees)}/{self.max_employees}, "
             f"Total Salary: {sum(emp.salary for emp in self.employees):.2f}, "
             f"Suppliers: {len(self.suppliers)}, "

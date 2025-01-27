@@ -3,41 +3,46 @@ import pickle
 import random
 from typing import List, Dict
 
-import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
+
+from mesa.model import Model
 
 from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
 
 
-class Economy:
+class Economy(Model):
     def __init__(self, config: Config = Config):
         self.config = config
 
-        self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
-        self.companies = self._create_companies(self.config.NUM_COMPANY)
-        self.all_companies = self.companies.copy()
+        super().__init__(seed=self.config.SEED)
+
+        self._create_individuals()
+        self._create_companies()
         self.stats = EconomyStats()
 
-    def _create_individuals(self, num_individuals: int) -> List[Individual]:
-        talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
-        initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
-        return [Individual(t, f, self.config) for t, f in zip(talents, initial_funds)]
+    def _create_individuals(self):
+        for _ in range(self.config.NUM_INDIVIDUAL):
+            talent = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD)
+            initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL)
+            Individual(model=self, talent=talent, initial_funds=initial_funds)
 
-    def _create_companies(self, num_companies: int) -> List[Company]:
-        companies = []
-        available_workers = set(self.individuals)
+    def _create_companies(self):
+        # Get all the Individual agents
+        unemployed_individuals = list(self.agents_by_type[Individual])
+        if not unemployed_individuals:
+            raise ValueError("No individuals in the model, run _create_individuals() first.")
 
-        for _ in range(num_companies):
-            owner = random.choice(list(available_workers))
-            available_workers.remove(owner)
+        for _ in range(self.config.NUM_COMPANY):
+            owner = random.choice(unemployed_individuals)
+            unemployed_individuals.remove(owner)
             initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_COMPANY)
-            company = Company(owner, initial_funds)
+            company = Company(model=self, owner=owner, initial_funds=initial_funds)
 
             # Hire initial employees
-            num_initial_employees = min(company.max_employees, len(available_workers), random.randint(1, 10))
-            potential_employees = sorted(list(available_workers), key=lambda x: x.talent, reverse=True)[
-                                  :int(len(available_workers) * 0.5)]
+            num_initial_employees = min(company.max_employees, len(unemployed_individuals), random.randint(1, 10))
+            potential_employees = sorted(list(unemployed_individuals), key=lambda x: x.talent, reverse=True)[
+                                  :int(len(unemployed_individuals) * 0.5)]
 
             if potential_employees:
                 initial_employees = random.sample(potential_employees,
@@ -45,86 +50,20 @@ class Economy:
                 for employee in initial_employees:
                     initial_salary = 50 + employee.talent * 0.5
                     if company.hire_employee(employee, initial_salary):
-                        available_workers.remove(employee)
+                        unemployed_individuals.remove(employee)
+    @property
+    def individuals(self):
+        return list(self.agents_by_type[Individual])
 
-            companies.append(company)
-
-        return companies
+    @property
+    def companies(self):
+        return list(self.agents_by_type[Company])
 
     def get_all_products(self) -> ProductGroup:
-        return ProductGroup([company.product for company in self.companies])
+        return ProductGroup(self.agents_by_type[Company].get('product'))
 
-    def simulate_step(self):
-        self.stats.step += 1
-        # Update company product prices and quality and reset revenue
-        for company in self.companies:
-            company.update_product_attributes(population=len(self.individuals), company_count=len(self.companies))
-            company.revenue = 0
-
-        all_products = self.get_all_products()
-
-        # Individuals spend money
-        for individual in self.individuals:
-            chosen_product = individual.decide_purchase(all_products)
-            if chosen_product:
-                individual.make_purchase(chosen_product)
-                individual.expenses = chosen_product.price
-                # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
-
-        for company in self.companies:
-            # Pay dividends from profit to owner
-            company.transfer_funds_to(company.owner, company.dividend)
-
-            # Check for bankruptcy
-            if company.check_bankruptcy():
-                self.companies.remove(company)
-                self.stats.num_bankruptcies += 1
-                continue
-            # Pays employees salary
-            for employee in company.employees:
-                company.transfer_funds_to(employee, employee.salary)
-            if company.funds < 0:
-                print('negative funds:', company.funds)
-
-        # Individuals find jobs
-        for individual in self.individuals:
-            if individual.employer is None:
-                individual.find_job(self.companies)
-
-        # Start new companies
-        for individual in self.individuals:
-            # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
-                self.start_new_company(individual)
-
-        # Adjust workforce for companies
-        for company in self.companies:
-            self.adjust_workforce(company)
-
-        # Collect statistics
-        self.stats.collect_statistics(self)
-
-    def start_new_company(self, individual: Individual):
-        if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP:
-            initial_funds = individual.funds * self.config.STARTUP_COST_FACTOR
-            new_company = Company(individual)
-            individual.transfer_funds_to(new_company, initial_funds)
-            self.companies.append(new_company)
-            self.all_companies.append(new_company)
-            self.stats.num_new_companies += 1  # Increment new company counter
-
-    def adjust_workforce(self, company: Company):
-        if company.revenue > company.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
-            # Hire new employees
-            potential_employees = [ind for ind in self.individuals if ind.employer is None]
-            if potential_employees:
-                new_employee = max(potential_employees, key=lambda x: x.talent)
-                company.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
-        elif company.revenue < company.costs:
-            # Fire employees
-            if company.employees:
-                employee_to_fire = random.choice(company.employees)
-                company.fire_employee(employee_to_fire)
+    def get_all_unemployed(self):
+        return self.agents_by_type[Individual].select(lambda i:i.employer is None)
 
     def save_state(self, filename: str):
         with open(filename, 'wb') as f:
@@ -135,9 +74,39 @@ class Economy:
         with open(filename, 'rb') as f:
             return pickle.load(f)
 
+    def step(self):
+        self.stats.step += 1
+        set_individual = self.agents_by_type[Individual]
+        set_company = self.agents_by_type[Company]
+
+        # Update company product prices and quality and reset revenue
+        set_company.set('revenue', 0)
+        set_company.do(Company.update_product_attributes)
+
+        # Individuals purchase product
+        all_products = self.get_all_products()
+        set_individual.do(Individual.purchase_product, products=all_products)
+
+        # Company pays owner dividends, check for bankruptcy, pays employees salary
+        set_company.do(Company.do_finances)
+
+        # Individuals find jobs
+        self.get_all_unemployed().shuffle_do(Individual.find_job, companies=list(set_company))
+
+        # Start new companies
+        set_individual.select(lambda i:i.funds > self.config.MIN_WEALTH_FOR_STARTUP).do(Individual.start_new_company)
+        set_company = self.agents_by_type[Company]
+
+        # Adjust workforce for companies
+        unemployed = list(self.get_all_unemployed())
+        set_company.shuffle_do(Company.adjust_workforce, unemployed)
+
+        # Collect statistics
+        # TODO: Use the data collection system provided by mesa
+        self.stats.collect_statistics(self)
+
 
 class EconomyStats:
-
     def __init__(self):
         self.step = 0
         self.total_money = 0
@@ -233,65 +202,13 @@ def run_simulation(
             NUM_COMPANY=num_companies,
         ))
     for _ in tqdm(range(num_steps - economy.stats.step), desc="Simulating economy"):
-        economy.simulate_step()
+        economy.step()
         # economy.all_companies[0].print_statistics()
         economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
         economy.save_state("economy_simulation.pkl")
     return economy
-
-
-# def plot_results(
-#         economy: Economy,
-#         save_path: Optional[str] = None,
-# ):
-#     n_rows = 5
-
-#     fig, axes = plt.subplots(n_rows, 2, figsize=(15, 4*n_rows))
-#     fig.suptitle('Economic Simulation Results')
-
-#     axes[0, 0].plot(economy.stats.individual_wealth_gini)
-#     axes[0, 0].set_title('Wealth Inequality (Gini)')
-#     axes[0, 0].set_ylabel('Gini Coefficient')
-
-#     axes[0, 1].plot(economy.stats.avg_individual_wealth)
-#     axes[0, 1].set_title('Average Wealth')
-#     axes[0, 1].set_ylabel('Wealth')
-
-#     axes[1, 0].plot(economy.stats.num_companies)
-#     axes[1, 0].set_title('Number of Companies')
-#     axes[1, 0].set_ylabel('Count')
-
-#     axes[1, 1].plot(economy.stats.unemployment_rate)
-#     axes[1, 1].set_title('Unemployment Rate')
-#     axes[1, 1].set_ylabel('Rate')
-
-#     axes[2, 0].plot(economy.stats.avg_product_quality)
-#     axes[2, 0].set_title('Average Product Quality')
-#     axes[2, 0].set_ylabel('Quality')
-
-#     axes[2, 1].plot(economy.stats.avg_product_price)
-#     axes[2, 1].set_title('Average Product Price')
-#     axes[2, 1].set_ylabel('Price')
-
-#     axes[3, 0].plot(economy.stats.bankruptcies_over_time, label='Bankruptcies')
-#     axes[3, 0].set_title('Number of Bankruptcies Over Time')
-#     axes[3, 0].set_ylabel('Count')
-
-#     axes[3, 1].plot(economy.stats.new_companies_over_time, label='New Companies')
-#     axes[3, 1].set_title('Number of New Companies Over Time')
-#     axes[3, 1].set_ylabel('Count')
-
-#     axes[4, 0].plot(economy.stats.total_money, label='Total money')
-#     axes[4, 0].set_title('Total money')
-#     axes[4, 0].set_ylabel('Money')
-
-#     plt.tight_layout()
-#     if save_path:
-#         plt.savefig(save_path)
-
-#     plt.show()
 
 
 def print_summary(economy: Economy):
