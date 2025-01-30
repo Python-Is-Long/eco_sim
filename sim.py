@@ -130,7 +130,7 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
         self.employees: List[Individual] = []
         self.product = Product(self)
         self.revenue = Config.FUNDS_PRECISION(0)
-        self.suppliers: List[Company] = []
+        self.raw_materials: List[Product] = []
         self.max_employees = random.randint(Config.MIN_COMPANY_SIZE, Config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
         self.profit_margin = 0.2    # (1 + profit margin) * price * sales = revenue  TODO: smart margin
@@ -141,7 +141,7 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
 
     @property
     def total_material_cost(self):
-        return sum(supplier.product.price for supplier in self.suppliers)
+        return sum(product.price for product in self.raw_materials)
 
     @property
     def costs(self):
@@ -164,11 +164,11 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
         diminishing_factor_employee = np.log(len(self.employees) + 1)
         base_quality_employee = employee_contribution / (diminishing_factor_employee + Config.EPSILON)
 
-        # Additional quality from suppliers
-        base_quality_supplier = 0
-        if len(self.suppliers) > 1:
-            base_quality_supplier = np.median(supplier.product.quality for supplier in self.suppliers)
-        return base_quality_employee + base_quality_supplier
+        # Additional quality from raw_materials
+        base_quality_raw_material = 0
+        if len(self.raw_materials) > 1:
+            base_quality_raw_material = np.median(product.quality for product in self.raw_materials)
+        return base_quality_employee + base_quality_raw_material
 
     def estimate_sales(self, population: int, company_count: int) -> float:
         # TODO: Smarter estimate sales 
@@ -193,22 +193,22 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
             employee.employer = None
             employee.salary = 0.0
 
-    # fix zero supplier issue
-    def find_supplier(self, potential_suppliers):
-        if self.product.quality == 1 or not self.suppliers:
-            self.suppliers.append(random.choice(potential_suppliers))
-        if len(self.suppliers) > 0 and random.random() < np.log(1/len(self.suppliers)+ Config.EPSILON):
-            self.suppliers.append(random.choice(potential_suppliers))
+    # fix zero raw_material issue
+    def find_raw_material(self, potential_raw_materials: List[Product]):
+        if self.product.quality == 1 or not self.raw_materials:
+            self.raw_materials.append(random.choice(potential_raw_materials))
+        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON):
+            self.raw_materials.append(random.choice(potential_raw_materials))
 
-    # fix forever growing supplier issue
-    def remove_supplier(self):
-        if len(self.suppliers) > 1 and random.random() < 1/np.log10(self.product.quality+ Config.EPSILON):
-            self.suppliers.remove(random.choice(self.suppliers))
+    # fix forever growing raw_material issue
+    def remove_raw_material(self):
+        if len(self.raw_materials) > 1 and random.random() < 1/np.log10(self.product.quality + Config.EPSILON):
+            self.raw_materials.remove(random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
-        if self.funds < self.costs and len(self.suppliers) > 0:
+        if self.funds < self.costs and len(self.raw_materials) > 0:
             # Reduce product cost before firing employees
-            self.suppliers.remove(sorted(list(self.suppliers), key=lambda x: x.product.price, reverse=True)[0])
+            self.raw_materials.remove(sorted(list(self.raw_materials), key=lambda x: x.price, reverse=True)[0])
             if self.funds < self.costs:
                 # Fire all employees
                 for employee in self.employees:
@@ -226,7 +226,7 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
             f"Owner: {self.owner.name}, Funds: {self.funds:.2f}, "
             f"Employees: {len(self.employees)}/{self.max_employees}, "
             f"Total Salary: {sum(emp.salary for emp in self.employees):.2f}, "
-            f"Suppliers: {len(self.suppliers)}, "
+            f"Raw Materials: {len(self.raw_materials)}, "
             f"Product Quality: {self.product.quality:.2f}, Product Price: {self.product.price:.2f}, "
             f"Costs: {self.costs:.2f}, Revenue: {self.revenue:.2f}, Dividends: {self.dividend:.2f}, "
             f"Bankruptcy: {self.bankruptcy}"
@@ -278,16 +278,15 @@ class Economy:
         self.stats.step += 1
         # Update company product prices and quality and reset revenue
         for company in self.companies:
-            company.remove_supplier() # see if remove supplier at this step
+            company.remove_raw_material() # see if remove raw_material at this step
             company.update_product_attributes(population=len(self.individuals), company_count=len(self.companies))
             company.revenue = 0
 
-        # see if able to find a supplier at this step
+        # see if able to find a raw_material at this step
         if len(self.companies) > 1:
-            all_suppliers = self.companies.copy()
             for company in self.companies:
-                all_suppliers.remove(company)
-                company.find_supplier(list(all_suppliers))
+                all_raw_materials = [c.product for c in self.companies if c is not company]
+                company.find_raw_material(all_raw_materials)
 
         all_products = self.get_all_products()
 
@@ -382,7 +381,7 @@ class EconomyStats:
         self.avg_product_price = []
         self.bankruptcies_over_time = []
         self.new_companies_over_time = []
-        self.avg_company_suppliers = []
+        self.avg_company_raw_materials = []
         self.avg_company_employees = []
 
         self.all_company_funds: List[List[float]] = []
@@ -439,7 +438,7 @@ class EconomyStats:
         if economy.companies:
             self.avg_product_quality.append(np.mean([c.product.quality for c in economy.companies]))
             self.avg_product_price.append(np.mean([c.product.price for c in economy.companies]))
-            self.avg_company_suppliers.append(np.mean([len(c.suppliers) for c in economy.companies]))
+            self.avg_company_raw_materials.append(np.mean([len(c.raw_materials) for c in economy.companies]))
             self.avg_company_employees.append(np.mean([len(c.employees) for c in economy.companies]))
         else:
             self.avg_product_quality.append(0)
@@ -549,7 +548,7 @@ if __name__ == "__main__":
     economy = run_simulation(
         num_individuals=10000,
         num_companies=50,
-        num_steps=1000,
+        num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
     )
