@@ -161,12 +161,14 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
 
         # Base quality from employees with diminishing returns
         employee_contribution = sum(emp.talent for emp in self.employees)
-        diminishing_factor = np.log(len(self.employees) + 1)
-        base_quality = employee_contribution / diminishing_factor
+        diminishing_factor_employee = np.log(len(self.employees) + 1)
+        base_quality_employee = employee_contribution / (diminishing_factor_employee + Config.EPSILON)
 
         # Additional quality from suppliers
-        supplier_quality = sum(supplier.product.quality for supplier in self.suppliers)
-        return base_quality + supplier_quality * 0.5
+        base_quality_supplier = 0
+        if len(self.suppliers) > 1:
+            base_quality_supplier = np.median(supplier.product.quality for supplier in self.suppliers)
+        return base_quality_employee + base_quality_supplier
 
     def estimate_sales(self, population: int, company_count: int) -> float:
         # TODO: Smarter estimate sales 
@@ -191,16 +193,31 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
             employee.employer = None
             employee.salary = 0.0
 
+    # fix zero supplier issue
+    def find_supplier(self, potential_suppliers: List['Company']):
+        if self.product.quality == 1 or not self.suppliers:
+            self.suppliers.append(random.choice(potential_suppliers))
+        if len(self.suppliers) > 0 and random.random() < np.log(1/len(self.suppliers)+ Config.EPSILON):
+            self.suppliers.append(random.choice(potential_suppliers))
+
+    # fix forever growing supplier issue
+    def remove_supplier(self):
+        if len(self.suppliers) > 1 and random.random() < 1/np.log10(self.product.quality+ Config.EPSILON):
+            self.suppliers.remove(random.choice(self.suppliers))
+
     def check_bankruptcy(self) -> bool:
-        if self.funds < self.costs:
-            # Fire all employees
-            for employee in self.employees:
-                self.fire_employee(employee)
-            # The owner runs with leftover company funds
-            self.transfer_funds_to(self.owner, self.funds)
-            self.owner.owning_company.remove(self)
-            self.bankruptcy = True
-            return True
+        if self.funds < self.costs and len(self.suppliers) > 0:
+            # Reduce product cost before firing employees
+            self.suppliers.remove(sorted(list(self.suppliers), key=lambda x: x.product.price, reverse=True)[0])
+            if self.funds < self.costs:
+                # Fire all employees
+                for employee in self.employees:
+                    self.fire_employee(employee)
+                # The owner runs with leftover company funds
+                self.transfer_funds_to(self.owner, self.funds)
+                self.owner.owning_company.remove(self)
+                self.bankruptcy = True
+                return True
         return False
 
     def print_statistics(self):
@@ -261,8 +278,15 @@ class Economy:
         self.stats.step += 1
         # Update company product prices and quality and reset revenue
         for company in self.companies:
+            company.remove_supplier() # see if remove supplier at this step
             company.update_product_attributes(population=len(self.individuals), company_count=len(self.companies))
             company.revenue = 0
+
+        # see if able to find a supplier at this step
+        if len(self.companies) > 1:
+            for company in self.companies:
+                all_suppliers = [c for c in self.companies if c != company]
+                company.find_supplier(all_suppliers)
 
         all_products = self.get_all_products()
 
@@ -294,10 +318,10 @@ class Economy:
             if individual.employer is None:
                 individual.find_job(self.companies)
 
+        market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
         for individual in self.individuals:
-            # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > Config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
+            if individual.funds > Config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
@@ -357,6 +381,8 @@ class EconomyStats:
         self.avg_product_price = []
         self.bankruptcies_over_time = []
         self.new_companies_over_time = []
+        self.avg_company_suppliers = []
+        self.avg_company_employees = []
 
         self.all_company_funds: List[List[float]] = []
         self.all_individual_funds: List[List[float]] = []
@@ -412,6 +438,8 @@ class EconomyStats:
         if economy.companies:
             self.avg_product_quality.append(np.mean([c.product.quality for c in economy.companies]))
             self.avg_product_price.append(np.mean([c.product.price for c in economy.companies]))
+            self.avg_company_suppliers.append(np.mean([len(c.suppliers) for c in economy.companies]))
+            self.avg_company_employees.append(np.mean([len(c.employees) for c in economy.companies]))
         else:
             self.avg_product_quality.append(0)
             self.avg_product_price.append(0)
