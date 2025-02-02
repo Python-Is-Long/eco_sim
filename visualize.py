@@ -1,4 +1,4 @@
-from sim import Economy
+from sim import Economy, EconomyStats
 from utils.simulationObjects import Config
 from mesa.mesa_logging import DEBUG, log_to_stderr
 from mesa.visualization import (
@@ -36,7 +36,7 @@ model = Economy(Config(
     NUM_INDIVIDUAL=100,
     NUM_COMPANY=5,
     SEED=42,
-    # FUNDS_PRECISION = int,
+    FUNDS_PRECISION = int,
 ))
 
 # Create visualization elements. The visualization elements are solara components
@@ -48,7 +48,7 @@ model = Economy(Config(
 # SpaceGraph = make_space_component(
 #     agent_portrayal, cmap="viridis", vmin=0, vmax=10, post_process=post_process
 # )
-GiniPlot = make_plot_component("individual_wealth_gini")
+components = [make_plot_component(n) for n in EconomyStats.__dict__.keys() if not n.startswith('_')]
 
 
 # Create the SolaraViz page. This will automatically create a server and display the
@@ -58,7 +58,7 @@ GiniPlot = make_plot_component("individual_wealth_gini")
 # It will automatically update and display any changes made to this file
 page = SolaraViz(
     model,
-    components=[GiniPlot],
+    components=components,
     # model_params=model_params,
     name="ECO SIM",
 )
