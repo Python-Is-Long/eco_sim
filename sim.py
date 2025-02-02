@@ -58,8 +58,15 @@ class Economy:
         self.stats.step += 1
         # Update company product prices and quality and reset revenue
         for company in self.companies:
+            company.remove_raw_material() # see if remove raw_material at this step
             company.update_product_attributes(population=len(self.individuals), company_count=len(self.companies))
             company.revenue = 0
+
+        # see if able to find a raw_material at this step
+        if len(self.companies) > 1:
+            for company in self.companies:
+                all_raw_materials = [c.product for c in self.companies if c is not company]
+                company.find_raw_material(all_raw_materials)
 
         all_products = self.get_all_products()
 
@@ -91,10 +98,11 @@ class Economy:
             if individual.employer is None:
                 individual.find_job(self.companies)
 
+        market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
         for individual in self.individuals:
             # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
+            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
@@ -154,6 +162,8 @@ class EconomyStats:
         self.avg_product_price = []
         self.bankruptcies_over_time = []
         self.new_companies_over_time = []
+        self.avg_company_raw_materials = []
+        self.avg_company_employees = []
 
         self.all_company_funds: List[List[float]] = []
         self.all_individual_funds: List[List[float]] = []
@@ -211,6 +221,8 @@ class EconomyStats:
         if economy.companies:
             self.avg_product_quality.append(np.mean([c.product.quality for c in economy.companies]))
             self.avg_product_price.append(np.mean([c.product.price for c in economy.companies]))
+            self.avg_company_raw_materials.append(np.mean([len(c.raw_materials) for c in economy.companies]))
+            self.avg_company_employees.append(np.mean([len(c.employees) for c in economy.companies]))
         else:
             self.avg_product_quality.append(0)
             self.avg_product_price.append(0)
