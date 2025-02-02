@@ -9,6 +9,7 @@ class NamedObject:
         super().__init__(**kwargs)
         self.name = uuid.uuid4()
 
+
 class FundsObject:
     """A class that manages funds for a subclass."""
     def __init__(self, starting_funds: Union[int, float]=0, funds_precision: Callable=np.float64, **kwargs):

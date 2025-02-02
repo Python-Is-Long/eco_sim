@@ -22,6 +22,8 @@ class EconomyStats:
     unemployment_rate = 0
     bankruptcies_over_time = 0
     new_companies_over_time = 0
+    avg_company_raw_materials = 0
+    avg_company_employees = 0
 
     avg_product_quality = 0
     avg_product_price = 0
@@ -132,6 +134,8 @@ class Economy(Model, EconomyStats):
         if set_company:
             self.avg_product_quality = np.mean([c.product.quality for c in set_company])
             self.avg_product_price = np.mean([c.product.price for c in set_company])
+            self.avg_company_raw_materials = np.mean([len(c.raw_materials) for c in economy.companies])
+            self.avg_company_employees = np.mean([len(c.employees) for c in economy.companies])
         else:
             self.avg_product_quality = 0
             self.avg_product_price = 0
@@ -145,6 +149,13 @@ class Economy(Model, EconomyStats):
         set_company.set('revenue', 0)
         set_company.do(Company.update_product_attributes)
 
+        # see if able to find a raw_material at this step
+        # TODO: This step should use the do method under agentset
+        # if len(self.companies) > 1:
+        #     for company in self.companies:
+        #         all_raw_materials = [c.product for c in self.companies if c is not company]
+        #         company.find_raw_material(all_raw_materials)
+
         # Individuals purchase product
         all_products = self.get_all_products()
         set_individual.do(Individual.purchase_product, products=all_products)
@@ -154,6 +165,15 @@ class Economy(Model, EconomyStats):
 
         # Individuals find jobs
         self.get_all_unemployed().shuffle_do(Individual.find_job, companies=list(set_company))
+
+        # Market potential
+        # TODO: This step should be put in the start_new_company method inside Individual
+        # market_potential = np.log10(len(self.individuals)) / len(self.companies)
+        # # Start new companies
+        # for individual in self.individuals:
+        #     # TODO: Instead of random chance of starting a new company, consider the current market demands
+        #     if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
+        #         self.start_new_company(individual)
 
         # Start new companies
         set_individual.select(lambda i: i.funds > self.config.MIN_WEALTH_FOR_STARTUP).do(Individual.start_new_company)

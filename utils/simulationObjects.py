@@ -5,7 +5,7 @@ import mesa
 import numpy as np
 from mesa.agent import Agent
 
-from .genericObjects import FundsObject
+from utils.genericObjects import FundsObject
 
 
 class Config:
@@ -41,18 +41,42 @@ class Config:
             setattr(self, key, value)
 
 
-class Product():
-    def __init__(self, company: 'Company', price: Union[int, float] = 1, quality: Union[int, float] = 1):
+class Product:
+    def __init__(
+        self,
+        company: 'Company',
+        price: int | float = 1,
+        quality: int | float = 1,
+        materials: Iterable['Product'] = None
+    ):
         super().__init__()
 
         self.quality = quality
         self.price = price
         self.company = company
+        self.materials = ProductGroup(materials if materials else [])
+
     def __repr__(self):
         return f"{__class__.__name__}({self.__dict__})"
 
+    @property
+    def cost(self) -> float:
+        return self.materials.total_price
+
+    def get_materials_recursive(self, known_child=None):
+        if known_child is None:
+            known_child = set(self.materials)
+
+        if self not in known_child:
+            known_child.add(self)
+            for material in self.materials:
+                material.get_materials_recursive(known_child)
+        return known_child
+
 
 class ProductGroup(tuple):
+    """A tuple of products with additional methods for managing products."""
+
     def __new__(cls, products: Iterable[Product]):
         # Check if all elements is a valid product
         if not all(isinstance(p, Product) for p in products):
@@ -72,6 +96,10 @@ class ProductGroup(tuple):
     @property
     def all_price(self) -> tuple:
         return tuple(p.quality for p in self)
+
+    @property
+    def total_price(self) -> float:
+        return sum(self.all_price)
 
     def get_quality_normalized(self, product: Product) -> float:
         if not self:
@@ -163,7 +191,7 @@ class Company(FundsObject, Agent):
         self.employees: List[Individual] = []
         self.product = Product(self)
         self.revenue = self.config.FUNDS_PRECISION(0)
-        self.suppliers: List[Company] = []
+        self.raw_materials: List[Product] = []
         self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
         self.profit_margin = 0.2  # (1 + profit margin) * price * sales = revenue  TODO: smart margin
@@ -174,7 +202,7 @@ class Company(FundsObject, Agent):
 
     @property
     def total_material_cost(self):
-        return sum(supplier.product.price for supplier in self.suppliers)
+        return sum(product.price for product in self.raw_materials)
 
     @property
     def costs(self):
@@ -194,12 +222,14 @@ class Company(FundsObject, Agent):
 
         # Base quality from employees with diminishing returns
         employee_contribution = sum(emp.talent for emp in self.employees)
-        diminishing_factor = np.log(len(self.employees) + 1)
-        base_quality = employee_contribution / diminishing_factor
+        diminishing_factor_employee = np.log(len(self.employees) + 1)
+        base_quality_employee = employee_contribution / (diminishing_factor_employee + Config.EPSILON)
 
-        # Additional quality from suppliers
-        supplier_quality = sum(supplier.product.quality for supplier in self.suppliers)
-        return base_quality + supplier_quality * 0.5
+        # Additional quality from raw_materials
+        base_quality_raw_material = 0
+        if len(self.raw_materials) > 1:
+            base_quality_raw_material = np.median(product.quality for product in self.raw_materials)
+        return base_quality_employee + base_quality_raw_material
 
     def estimate_sales(self, population: int, company_count: int) -> float:
         # TODO: Smarter estimate sales
@@ -218,6 +248,21 @@ class Company(FundsObject, Agent):
             self.employees.remove(employee)
             employee.employer = None
             employee.salary = 0.0
+
+    # fix zero raw_material issue
+    def find_raw_material(self, products: List[Product]):
+        # Get all products that does not have this company's product as a child material
+        potential_materials = [p for p in products if self.product not in p.get_materials_recursive()]
+
+        if self.product.quality == 1 or not self.raw_materials:
+            self.raw_materials.append(random.choice(potential_materials))
+        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON):
+            self.raw_materials.append(random.choice(potential_materials))
+
+    # fix forever growing raw_material issue
+    def remove_raw_material(self):
+        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON):
+            self.raw_materials.remove(random.choice(self.raw_materials))
 
     def update_product_attributes(self):
         population = len(self.model.agents_by_type[Individual])
@@ -240,16 +285,20 @@ class Company(FundsObject, Agent):
                 self.fire_employee(employee_to_fire)
 
     def check_bankruptcy(self) -> bool:
-        if self.funds < self.costs:
-            # Fire all employees
-            for employee in self.employees:
-                self.fire_employee(employee)
-            # The owner runs with leftover company funds
-            self.transfer_funds_to(self.owner, self.funds)
-            self.owner.owning_company.remove(self)
-            self.bankruptcy = True
-            return True
-        return False
+        if self.funds < self.costs and len(self.raw_materials) > 0:
+            # Reduce product cost before firing employees
+            self.raw_materials.remove(sorted(list(self.raw_materials), key=lambda x: x.price, reverse=True)[0])
+
+            if self.funds < self.costs:
+                # Fire all employees
+                for employee in self.employees:
+                    self.fire_employee(employee)
+                # The owner runs with leftover company funds
+                self.transfer_funds_to(self.owner, self.funds)
+                self.owner.owning_company.remove(self)
+                self.bankruptcy = True
+                return True
+            return False
 
     def do_finances(self):
         # Pay dividends from profit to owner
@@ -267,9 +316,20 @@ class Company(FundsObject, Agent):
             f"Owner ID: {self.owner.unique_id}, Funds: {self.funds:.2f}, "
             f"Employees: {len(self.employees)}/{self.max_employees}, "
             f"Total Salary: {sum(emp.salary for emp in self.employees):.2f}, "
-            f"Suppliers: {len(self.suppliers)}, "
+            f"Raw Materials: {len(self.raw_materials)}, "
             f"Product Quality: {self.product.quality:.2f}, Product Price: {self.product.price:.2f}, "
             f"Costs: {self.costs:.2f}, Revenue: {self.revenue:.2f}, Dividends: {self.dividend:.2f}, "
             f"Bankruptcy: {self.bankruptcy}"
         )
         print(stats)
+
+
+if __name__ == "__main__":
+    # Test products get child materials
+    product1 = Product(None, 1, 1)
+    product2 = Product(None, 2, 2)
+    product1.materials = ProductGroup([product2])
+    product2.materials = ProductGroup([product1])
+    from tqdm import tqdm
+    for i in tqdm(range(100000000)):
+        len(product1.get_materials_recursive())
