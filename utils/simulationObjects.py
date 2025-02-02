@@ -61,7 +61,7 @@ class Product:
         self.materials = ProductGroup(materials if materials else [])
 
     def __repr__(self):
-        return f"{__class__.__name__}(name={self.name}, price={self.price}, quality={self.quality})"
+        return f"{__class__.__name__}(price={self.price}, quality={self.quality})"
 
     @property
     def cost(self) -> float:
