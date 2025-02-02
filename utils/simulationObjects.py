@@ -57,7 +57,7 @@ class Product:
         self.materials = ProductGroup(materials if materials else [])
 
     def __repr__(self):
-        return f"{__class__.__name__}({self.__dict__})"
+        return f"{__class__.__name__}(name={self.name}, price={self.price}, quality={self.quality})"
 
     @property
     def cost(self) -> float:
@@ -65,11 +65,12 @@ class Product:
 
     def get_materials_recursive(self, known_child=None):
         if known_child is None:
-            known_child = set(self.materials)
+            known_child = set()
 
-        if self not in known_child:
-            known_child.add(self)
-            for material in self.materials:
+        for material in self.materials:
+            # When a material is not already known, add it to the set and get its materials
+            if material not in known_child:
+                known_child.add(material)
                 material.get_materials_recursive(known_child)
         return known_child
 
@@ -330,6 +331,8 @@ if __name__ == "__main__":
     product2 = Product(None, 2, 2)
     product1.materials = ProductGroup([product2])
     product2.materials = ProductGroup([product1])
-    from tqdm import tqdm
-    for i in tqdm(range(100000000)):
-        len(product1.get_materials_recursive())
+    product3 = Product(None, 3, 3)
+    product4 = Product(None, 4, 4, [product3])
+
+    print(product1.get_materials_recursive())
+    print(product4.get_materials_recursive())
