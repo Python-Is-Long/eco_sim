@@ -7,6 +7,10 @@ from mesa.agent import Agent
 
 from utils.genericObjects import FundsObject
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from sim import Economy
+
 
 class Config:
     """Default Settings"""
@@ -110,6 +114,8 @@ class ProductGroup(tuple):
 
 
 class Individual(FundsObject, Agent):
+    model: 'Economy'
+
     def __init__(self, model: 'mesa.model', talent: float, initial_funds: float, configuration: Config = Config):
         self.config = configuration
         super().__init__(
@@ -177,6 +183,8 @@ class Individual(FundsObject, Agent):
 
 
 class Company(FundsObject, Agent):
+    model: 'Economy'
+
     def __init__(self, model: 'mesa.model', owner: Individual, initial_funds: float = 0, configuration: Config = Config):
         self.config = configuration
         super().__init__(
