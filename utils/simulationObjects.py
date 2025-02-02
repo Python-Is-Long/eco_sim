@@ -1,5 +1,6 @@
 import random
 from typing import List, Optional, Union, Iterable, Callable
+from typing import TYPE_CHECKING
 
 import mesa
 import numpy as np
@@ -7,7 +8,6 @@ from mesa.agent import Agent
 
 from utils.genericObjects import FundsObject
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sim import Economy
 
@@ -47,11 +47,11 @@ class Config:
 
 class Product:
     def __init__(
-        self,
-        company: 'Company',
-        price: int | float = 1,
-        quality: int | float = 1,
-        materials: Iterable['Product'] = None
+            self,
+            company: 'Company',
+            price: int | float = 1,
+            quality: int | float = 1,
+            materials: Iterable['Product'] = None
     ):
         super().__init__()
 
@@ -174,8 +174,9 @@ class Individual(FundsObject, Agent):
                     break
 
     def start_new_company(self):
-        # TODO: Instead of random chance of starting a new company, consider the current market demands
-        if random.random() < 0.01:
+        # The chance of starting a new company decreases with as the current number of companies increases
+        market_potential = np.log10(len(self.model.agents_by_type[Individual])) / len(self.model.agents_by_type[Company])
+        if random.random() < market_potential:
             initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
             new_company = Company(model=self.model, owner=self)
             self.transfer_funds_to(new_company, initial_funds)
@@ -185,7 +186,13 @@ class Individual(FundsObject, Agent):
 class Company(FundsObject, Agent):
     model: 'Economy'
 
-    def __init__(self, model: 'mesa.model', owner: Individual, initial_funds: float = 0, configuration: Config = Config):
+    def __init__(
+            self,
+            model: 'mesa.model',
+            owner: Individual,
+            initial_funds: float = 0,
+            configuration: Config = Config,
+    ):
         self.config = configuration
         super().__init__(
             model=model,
@@ -237,7 +244,7 @@ class Company(FundsObject, Agent):
         # Additional quality from raw_materials
         base_quality_raw_material = 0
         if len(self.raw_materials) > 1:
-            base_quality_raw_material = np.median(product.quality for product in self.raw_materials)
+            base_quality_raw_material = np.median([product.quality for product in self.raw_materials])
         return base_quality_employee + base_quality_raw_material
 
     def estimate_sales(self, population: int, company_count: int) -> float:
@@ -259,10 +266,13 @@ class Company(FundsObject, Agent):
             employee.salary = 0.0
 
     # fix zero raw_material issue
-    def find_raw_material(self, products: List[Product]):
-        # Get all products that does not have this company's product as a child material
-        potential_materials = [p for p in products if self.product not in p.get_materials_recursive()]
+    def find_raw_material(self):
+        all_products = self.model.get_all_products()
+        # Filter all the products that made of part of this company's own product or this company's own product
+        potential_materials = [p for p in all_products if
+                               self.product not in p.get_materials_recursive() and p != self.product]
 
+        # TODO: smarter material selection
         if self.product.quality == 1 or not self.raw_materials:
             self.raw_materials.append(random.choice(potential_materials))
         if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON):
@@ -279,7 +289,8 @@ class Company(FundsObject, Agent):
         # Update product quality and price
         self.product.quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
         self.product.price = (max(1, self.costs * (1 + self.profit_margin)) /
-                              self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
+                              self.estimate_sales(population=population,
+                                                  company_count=company_count))  # Ensure price >= 1
 
     def adjust_workforce(self, unemployed: list[Individual]):
         if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:

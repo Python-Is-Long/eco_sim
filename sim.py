@@ -4,8 +4,8 @@ import random
 
 import numpy as np
 from mesa.agent import AgentSet
-from mesa.model import Model
 from mesa.datacollection import DataCollector
+from mesa.model import Model
 from tqdm import tqdm
 
 from utils.simulationObjects import Config, Individual, Company, ProductGroup
@@ -139,7 +139,6 @@ class Economy(Model, EconomyStats):
             self.avg_product_quality = 0
             self.avg_product_price = 0
 
-
     def step(self):
         set_individual = self.agents_by_type[Individual]
         set_company = self.agents_by_type[Company]
@@ -148,12 +147,8 @@ class Economy(Model, EconomyStats):
         set_company.set('revenue', 0)
         set_company.do(Company.update_product_attributes)
 
-        # see if able to find a raw_material at this step
-        # TODO: This step should use the do method under agentset
-        # if len(self.companies) > 1:
-        #     for company in self.companies:
-        #         all_raw_materials = [c.product for c in self.companies if c is not company]
-        #         company.find_raw_material(all_raw_materials)
+        # Companies find raw materials
+        set_company.shuffle_do(Company.find_raw_material)
 
         # Individuals purchase product
         all_products = self.get_all_products()
@@ -164,15 +159,6 @@ class Economy(Model, EconomyStats):
 
         # Individuals find jobs
         self.get_all_unemployed().shuffle_do(Individual.find_job, companies=list(set_company))
-
-        # Market potential
-        # TODO: This step should be put in the start_new_company method inside Individual
-        # market_potential = np.log10(len(self.individuals)) / len(self.companies)
-        # # Start new companies
-        # for individual in self.individuals:
-        #     # TODO: Instead of random chance of starting a new company, consider the current market demands
-        #     if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
-        #         self.start_new_company(individual)
 
         # Start new companies
         set_individual.select(lambda i: i.funds > self.config.MIN_WEALTH_FOR_STARTUP).do(Individual.start_new_company)
@@ -209,7 +195,7 @@ def run_simulation(
         # economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
-        economy.save_state("economy_simulation.pkl")
+        # economy.save_state("economy_simulation.pkl")
     return economy
 
 
@@ -219,8 +205,8 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=100,
-        num_companies=5,
+        num_individuals=1000,
+        num_companies=50,
         num_steps=1000,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
