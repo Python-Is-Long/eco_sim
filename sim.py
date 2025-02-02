@@ -1,7 +1,6 @@
 import os
 import pickle
 import random
-from typing import Dict
 
 import numpy as np
 from mesa.agent import AgentSet
@@ -134,8 +133,8 @@ class Economy(Model, EconomyStats):
         if set_company:
             self.avg_product_quality = np.mean([c.product.quality for c in set_company])
             self.avg_product_price = np.mean([c.product.price for c in set_company])
-            self.avg_company_raw_materials = np.mean([len(c.raw_materials) for c in economy.companies])
-            self.avg_company_employees = np.mean([len(c.employees) for c in economy.companies])
+            self.avg_company_raw_materials = np.mean([len(c.raw_materials) for c in set_company])
+            self.avg_company_employees = np.mean([len(c.employees) for c in set_company])
         else:
             self.avg_product_quality = 0
             self.avg_product_price = 0
@@ -212,25 +211,6 @@ def run_simulation(
         # Save simulation state
         economy.save_state("economy_simulation.pkl")
     return economy
-
-
-def print_summary(economy: Economy):
-    print("\nFinal Economic Statistics:")
-    print(f"Number of individuals: {len(economy.individuals)}")
-    print(f"Number of companies: {len(economy.companies)}")
-    print(f"Average wealth: {economy.stats.avg_individual_wealth[-1]:.2f}")
-    print(f"Wealth inequality (Gini): {economy.stats.individual_wealth_gini[-1]:.2f}")
-    print(f"Unemployment rate: {economy.stats.unemployment_rate[-1]:.2%}")
-    print(f"Total bankruptcies: {economy.stats.num_bankruptcies}")
-    print(f"Total new companies: {economy.stats.num_new_companies}")
-
-    wealth_percentiles = np.percentile([ind.funds for ind in economy.individuals], [25, 50, 75, 90, 99])
-    print("\nWealth Distribution:")
-    print(f"25th percentile: {wealth_percentiles[0]:.2f}")
-    print(f"Median: {wealth_percentiles[1]:.2f}")
-    print(f"75th percentile: {wealth_percentiles[2]:.2f}")
-    print(f"90th percentile: {wealth_percentiles[3]:.2f}")
-    print(f"99th percentile: {wealth_percentiles[4]:.2f}")
 
 
 if __name__ == "__main__":
