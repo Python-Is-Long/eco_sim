@@ -3,7 +3,7 @@ from typing import List, Optional, Union, Iterable, Callable
 
 import numpy as np
 
-from .genericObjects import NamedObject, FundsObject
+from utils.genericObjects import NamedObject, FundsObject
 
 
 class Config:
@@ -39,17 +39,41 @@ class Config:
 
 
 class Product(NamedObject):
-    def __init__(self, company: 'Company', price: Union[int, float] = 1, quality: Union[int, float] = 1):
+    def __init__(
+        self,
+        company: 'Company',
+        price: int | float = 1,
+        quality: int | float = 1,
+        materials: Iterable['Product'] = None
+    ):
         super().__init__()
 
         self.quality = quality
         self.price = price
         self.company = company
+        self.materials = ProductGroup(materials if materials else [])
+
     def __repr__(self):
         return f"{__class__.__name__}({self.__dict__})"
 
+    @property
+    def cost(self) -> float:
+        return self.materials.total_price
+
+    def get_materials_recursive(self, known_child=None):
+        if known_child is None:
+            known_child = set(self.materials)
+
+        if self not in known_child:
+            known_child.add(self)
+            for material in self.materials:
+                material.get_materials_recursive(known_child)
+        return known_child
+
 
 class ProductGroup(tuple):
+    """A tuple of products with additional methods for managing products."""
+
     def __new__(cls, products: Iterable[Product]):
         # Check if all elements is a valid product
         if not all(isinstance(p, Product) for p in products):
@@ -69,6 +93,10 @@ class ProductGroup(tuple):
     @property
     def all_price(self) -> tuple:
         return tuple(p.quality for p in self)
+
+    @property
+    def total_price(self) -> float:
+        return sum(self.all_price)
 
     def get_quality_normalized(self, product: Product) -> float:
         if not self:
@@ -212,15 +240,18 @@ class Company(FundsObject, NamedObject):
             employee.salary = 0.0
 
     # fix zero raw_material issue
-    def find_raw_material(self, potential_raw_materials: List[Product]):
+    def find_raw_material(self, products: List[Product]):
+        # Get all products that does not have this company's product as a child material
+        potential_materials = [p for p in products if self.product not in p.get_materials_recursive()]
+
         if self.product.quality == 1 or not self.raw_materials:
-            self.raw_materials.append(random.choice(potential_raw_materials))
-        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON):
-            self.raw_materials.append(random.choice(potential_raw_materials))
+            self.raw_materials.append(random.choice(potential_materials))
+        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON):
+            self.raw_materials.append(random.choice(potential_materials))
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
-        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + Config.EPSILON):
+        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON):
             self.raw_materials.remove(random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
@@ -251,3 +282,14 @@ class Company(FundsObject, NamedObject):
             f"Bankruptcy: {self.bankruptcy}"
         )
         print(stats)
+
+
+if __name__ == "__main__":
+    # Test products get child materials
+    product1 = Product(None, 1, 1)
+    product2 = Product(None, 2, 2)
+    product1.materials = ProductGroup([product2])
+    product2.materials = ProductGroup([product1])
+    from tqdm import tqdm
+    for i in tqdm(range(100000000)):
+        len(product1.get_materials_recursive())
