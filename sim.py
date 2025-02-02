@@ -1,17 +1,38 @@
 import os
 import pickle
 import random
-from typing import List, Dict
+from typing import Dict
 
 import numpy as np
+from mesa.agent import AgentSet
+from mesa.model import Model
+from mesa.datacollection import DataCollector
 from tqdm import tqdm
 
-from mesa.model import Model
-
-from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
+from utils.simulationObjects import Config, Individual, Company, ProductGroup
 
 
-class Economy(Model):
+class EconomyStats:
+    total_funds = 0
+    individual_wealth_gini = 0
+    avg_individual_wealth = 0
+    sum_individual_wealth = 0
+    sum_company_wealth = 0
+    num_companies = 0
+    unemployment_rate = 0
+    bankruptcies_over_time = 0
+    new_companies_over_time = 0
+
+    avg_product_quality = 0
+    avg_product_price = 0
+
+    # all_company_funds: list[list[float]] = []
+    # all_individual_funds: list[list[float]] = []
+    # all_product_prices: list[list[float]] = []
+    # all_salaries: list[list[float]] = []
+
+
+class Economy(Model, EconomyStats):
     def __init__(self, config: Config = Config):
         self.config = config
 
@@ -19,7 +40,18 @@ class Economy(Model):
 
         self._create_individuals()
         self._create_companies()
-        self.stats = EconomyStats()
+
+        self.num_bankruptcies = 0
+        self.num_new_companies = 0
+
+        # Setup data collector to collect from all attributes in the EconomyStats class
+        self.datacollector = DataCollector(
+            model_reporters={k: k for k in EconomyStats.__dict__.keys() if not k.startswith('_')}
+        )
+
+        # Collect initial stats
+        self.refresh_stats()
+        self.datacollector.collect(self)
 
     def _create_individuals(self):
         for _ in range(self.config.NUM_INDIVIDUAL):
@@ -51,19 +83,12 @@ class Economy(Model):
                     initial_salary = 50 + employee.talent * 0.5
                     if company.hire_employee(employee, initial_salary):
                         unemployed_individuals.remove(employee)
-    @property
-    def individuals(self):
-        return list(self.agents_by_type[Individual])
-
-    @property
-    def companies(self):
-        return list(self.agents_by_type[Company])
 
     def get_all_products(self) -> ProductGroup:
         return ProductGroup(self.agents_by_type[Company].get('product'))
 
     def get_all_unemployed(self):
-        return self.agents_by_type[Individual].select(lambda i:i.employer is None)
+        return self.agents_by_type[Individual].select(lambda i: i.employer is None)
 
     def save_state(self, filename: str):
         with open(filename, 'wb') as f:
@@ -74,8 +99,45 @@ class Economy(Model):
         with open(filename, 'rb') as f:
             return pickle.load(f)
 
+    @staticmethod
+    def calculate_gini(agents: AgentSet) -> float:
+        if (n := len(agents)) == 0:
+            return 0
+        sorted_wealths = sorted(a.funds for a in agents)
+        index = np.arange(1, n + 1)
+        return ((2 * index - n - 1) * sorted_wealths).sum() / (n * sum(sorted_wealths))
+
+    def refresh_stats(self):
+        set_individuals = self.agents_by_type[Individual]
+        set_company = self.agents_by_type[Company]
+
+        all_funds_individual = [i.funds for i in set_individuals]
+
+        self.individual_wealth_gini = self.calculate_gini(set_individuals)
+        self.sum_individual_wealth = np.sum(all_funds_individual)
+        self.sum_company_wealth = np.sum([c.funds for c in set_company])
+        self.num_companies = len(set_company)
+        self.unemployment_rate = 1 - len([i for i in set_individuals if i.employer]) / len(set_individuals)
+        self.bankruptcies_over_time = self.num_bankruptcies  # Track bankruptcies
+        self.new_companies_over_time = self.num_new_companies  # Track new companies
+
+        self.total_funds = self.sum_individual_wealth + self.sum_company_wealth
+
+        # to_low_precision = lambda x: float(np.float32(x))
+        # self.all_company_funds = [to_low_precision(c.funds) for c in set_company]
+        # self.all_individual_funds = [to_low_precision(i.funds) for i in set_individuals]
+        # self.all_product_prices = [to_low_precision(c.product.price) for c in set_company]
+        # self.all_salaries = [to_low_precision(e.salary) for e in set_individuals if e.employer]
+
+        if set_company:
+            self.avg_product_quality = np.mean([c.product.quality for c in set_company])
+            self.avg_product_price = np.mean([c.product.price for c in set_company])
+        else:
+            self.avg_product_quality = 0
+            self.avg_product_price = 0
+
+
     def step(self):
-        self.stats.step += 1
         set_individual = self.agents_by_type[Individual]
         set_company = self.agents_by_type[Company]
 
@@ -94,7 +156,7 @@ class Economy(Model):
         self.get_all_unemployed().shuffle_do(Individual.find_job, companies=list(set_company))
 
         # Start new companies
-        set_individual.select(lambda i:i.funds > self.config.MIN_WEALTH_FOR_STARTUP).do(Individual.start_new_company)
+        set_individual.select(lambda i: i.funds > self.config.MIN_WEALTH_FOR_STARTUP).do(Individual.start_new_company)
         set_company = self.agents_by_type[Company]
 
         # Adjust workforce for companies
@@ -102,87 +164,8 @@ class Economy(Model):
         set_company.shuffle_do(Company.adjust_workforce, unemployed)
 
         # Collect statistics
-        # TODO: Use the data collection system provided by mesa
-        self.stats.collect_statistics(self)
-
-
-class EconomyStats:
-    def __init__(self):
-        self.step = 0
-        self.total_money = 0
-        self.num_bankruptcies = 0
-        self.num_new_companies = 0
-
-        self.individual_wealth_gini = []
-        self.avg_individual_wealth = []
-        self.sum_individual_wealth = []
-        self.sum_company_wealth = []
-        self.num_companies = []
-        self.unemployment_rate = []
-        self.avg_product_quality = []
-        self.avg_product_price = []
-        self.bankruptcies_over_time = []
-        self.new_companies_over_time = []
-
-        self.all_company_funds: List[List[float]] = []
-        self.all_individual_funds: List[List[float]] = []
-        self.all_product_prices: List[List[float]] = []
-        self.all_salaries: List[List[float]] = []
-
-    @property
-    def dict_scalar_attributes(self) -> Dict:
-        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, (int, float))}
-
-    @property
-    def dict_histogram_attributes(self) -> Dict:
-        return {attr: self.__dict__[attr] for attr in
-                ['all_company_funds', 'all_individual_funds', 'all_product_prices', 'all_salaries']}
-
-    @property
-    def dict_time_series_attributes(self) -> Dict:
-        return {attr: value for attr, value in self.__dict__.items() if
-                isinstance(value, list) and attr not in self.dict_histogram_attributes}
-
-    def calculate_gini(self, wealths: List[float]) -> float:
-        sorted_wealths = sorted(wealths)
-        n = len(sorted_wealths)
-        if n == 0:
-            return 0
-        index = np.arange(1, n + 1)
-        return ((2 * index - n - 1) * sorted_wealths).sum() / (n * sum(sorted_wealths))
-
-    def save_stats(self, file):
-        with open(file, 'wb') as f:
-            pickle.dump(self, f)
-
-    def collect_statistics(self, economy: Economy):
-        individual_wealths = [ind.funds for ind in economy.individuals]
-        company_wealths = [comp.funds for comp in economy.companies]
-        employed = len([ind for ind in economy.individuals if ind.employer])
-
-        self.individual_wealth_gini.append(self.calculate_gini(individual_wealths))
-        self.avg_individual_wealth.append(np.mean(individual_wealths))
-        self.sum_individual_wealth.append(np.sum(individual_wealths))
-        self.sum_company_wealth.append(np.sum(company_wealths))
-        self.num_companies.append(len(economy.companies))
-        self.unemployment_rate.append(1 - employed / len(economy.individuals))
-        self.bankruptcies_over_time.append(self.num_bankruptcies)  # Track bankruptcies
-        self.new_companies_over_time.append(self.num_new_companies)  # Track new companies
-
-        self.total_money = round(self.sum_individual_wealth[-1] + self.sum_company_wealth[-1])
-
-        to_low_precision = lambda x: float(np.float32(x))
-        self.all_company_funds.append([to_low_precision(c.funds) for c in economy.companies])
-        self.all_individual_funds.append([to_low_precision(i.funds) for i in economy.individuals])
-        self.all_product_prices.append([to_low_precision(c.product.price) for c in economy.companies])
-        self.all_salaries.append([to_low_precision(e.salary) for e in economy.individuals if e.employer])
-
-        if economy.companies:
-            self.avg_product_quality.append(np.mean([c.product.quality for c in economy.companies]))
-            self.avg_product_price.append(np.mean([c.product.price for c in economy.companies]))
-        else:
-            self.avg_product_quality.append(0)
-            self.avg_product_price.append(0)
+        self.refresh_stats()
+        self.datacollector.collect(self)
 
 
 def run_simulation(
@@ -201,10 +184,10 @@ def run_simulation(
             NUM_INDIVIDUAL=num_individuals,
             NUM_COMPANY=num_companies,
         ))
-    for _ in tqdm(range(num_steps - economy.stats.step), desc="Simulating economy"):
+    for _ in tqdm(range(num_steps - economy.steps), desc="Simulating economy"):
         economy.step()
         # economy.all_companies[0].print_statistics()
-        economy.stats.save_stats("simulation_stats.pkl")
+        # economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
         economy.save_state("economy_simulation.pkl")

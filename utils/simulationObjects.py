@@ -5,7 +5,7 @@ import mesa
 import numpy as np
 from mesa.agent import Agent
 
-from utils.genericObjects import FundsObject
+from .genericObjects import FundsObject
 
 
 class Config:
@@ -144,7 +144,7 @@ class Individual(FundsObject, Agent):
             initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
             new_company = Company(model=self.model, owner=self)
             self.transfer_funds_to(new_company, initial_funds)
-            self.model.stats.num_new_companies += 1  # Increment new company counter
+            self.model.num_new_companies += 1  # Increment new company counter
 
 
 class Company(FundsObject, Agent):
@@ -256,7 +256,7 @@ class Company(FundsObject, Agent):
         self.transfer_funds_to(self.owner, self.dividend)
         # Check for bankruptcy
         if self.check_bankruptcy():
-            self.model.stats.num_bankruptcies += 1
+            self.model.num_bankruptcies += 1
             self.remove()
         # Pays employees salary
         [e.transfer_funds_from(self, e.salary) for e in self.employees]
