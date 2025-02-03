@@ -331,7 +331,7 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=10000,
+        num_individuals=1000,
         num_companies=50,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",

@@ -50,7 +50,7 @@ class Product(NamedObject):
 
         self.quality = quality
         self.price = price
-        self.company = company
+        self.company = company.name
         self.materials = ProductGroup(materials if materials else [])
 
     def __repr__(self):
@@ -124,9 +124,11 @@ class Individual(FundsObject, NamedObject):
     def income(self):
         return self.salary + sum(c.dividend for c in self.owning_company)
 
-    def make_purchase(self, product: Product):
-        self.transfer_funds_to(product.company, product.price)
-        product.company.revenue += product.price
+    def make_purchase(self, companies: List['Company'], product: Product):
+        for c in companies:
+            if product.company is c.name:
+                self.transfer_funds_to(c, product.price)
+                c.revenue += product.price
 
     def score_product(self, product: Product) -> float:
         return np.tanh((self.funds + self.income) / product.price) * product.quality if self.can_afford(
@@ -247,12 +249,12 @@ class Company(FundsObject, NamedObject):
 
         if self.product.quality == 1 or not self.raw_materials:
             self.raw_materials.append(random.choice(potential_materials))
-        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON):
+        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON) * 10:
             self.raw_materials.append(random.choice(potential_materials))
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
-        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON):
+        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + Config.EPSILON) / 10:
             self.raw_materials.remove(random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
