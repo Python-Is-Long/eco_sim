@@ -41,7 +41,7 @@ class Product(NamedObject):
     def __init__(self, company: 'Company', price: Union[int, float]=1, quality: Union[int, float]=1):
         self.quality = quality
         self.price = price
-        self.company = company
+        self.company = company.name
     def __repr__(self):
         return f"{__class__.__name__}({self.__dict__})"
 
@@ -85,9 +85,11 @@ class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISIO
     def income(self):
         return self.salary + sum(c.dividend for c in self.owning_company)
 
-    def make_purchase(self, product: Product):
-        self.transfer_funds_to(product.company, product.price)
-        product.company.revenue += product.price
+    def make_purchase(self, companies: List['Company'], product:Product):
+        for c in companies:
+            if product.company is c.name:
+                self.transfer_funds_to(c, product.price)
+                c.revenue += product.price
 
     def score_product(self, product: Product) -> float:
         return np.tanh((self.funds + self.income) / product.price) * product.quality if self.can_afford(product.price) else 0
@@ -106,11 +108,12 @@ class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISIO
         return chosen_product
 
     def find_job(self, companies: List['Company']):
+        # TODO: refine find job logic, hiring, firing, company compnay conflict, company indiviual conflict, individual individual conflict
         if self.employer is None:
             for company in companies:
                 if company.hire_employee(self, self.talent * Config.SALARY_FACTOR):
                     break
-    
+
     def estimate_runout(self) -> Optional[int]:
         # Estimate how many time steps until the individual runs out of funds
         est = self.funds / (self.income - self.expenses)
@@ -197,12 +200,12 @@ class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
     def find_raw_material(self, potential_raw_materials: List[Product]):
         if self.product.quality == 1 or not self.raw_materials:
             self.raw_materials.append(random.choice(potential_raw_materials))
-        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON):
+        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON)*10:
             self.raw_materials.append(random.choice(potential_raw_materials))
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
-        if len(self.raw_materials) > 1 and random.random() < 1/np.log10(self.product.quality + Config.EPSILON):
+        if len(self.raw_materials) > 1 and random.random() < 1/np.log10(self.product.quality + Config.EPSILON)/10:
             self.raw_materials.remove(random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
@@ -294,7 +297,7 @@ class Economy:
         for individual in self.individuals:
             chosen_product = individual.decide_purchase(all_products)
             if chosen_product:
-                individual.make_purchase(chosen_product)
+                individual.make_purchase(self.companies, chosen_product)
                 individual.expenses = chosen_product.price
                 # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
 
@@ -548,7 +551,7 @@ if __name__ == "__main__":
     economy = run_simulation(
         num_individuals=10000,
         num_companies=50,
-        num_steps=100,
+        num_steps=2000,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
     )
