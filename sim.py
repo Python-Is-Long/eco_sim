@@ -3,6 +3,7 @@ import pickle
 import random
 import uuid
 from dataclasses import dataclass
+from random import choices, uniform
 from typing import List, Optional, Union, Any, Tuple, Dict
 
 import matplotlib.pyplot as plt
@@ -30,8 +31,15 @@ class Config:
     BANKRUPTCY_THRESHOLD = 1000  # Companies can go slightly negative before bankruptcy
 
     # Entrepreneurship settings
+    MAX_SKILLS = 3
     STARTUP_COST_FACTOR = 0.5  # Fraction of wealth used to start a company
     MIN_WEALTH_FOR_STARTUP = 10000  # Minimum wealth to start a company
+    POSSIBLE_MARKETS = list(range(0,10))
+    # [
+    # "Technology", "Healthcare", "Finance", "Education", "E-commerce",
+    # "Energy", "Food & Beverage", "Manufacturing", "Media", "Entertainment",
+    # "Art & Design"
+    # ]
 
     # Math
     EPSILON = 1e-6
@@ -71,13 +79,37 @@ class ProductGroup(tuple):
         return product.quality / self.quality_max
 
 
+class NicheMarket:
+    def __init__(self, field, demand, competition, profit_margin):
+        self.field = field
+        self.demand = demand
+        self.competition = competition
+        self.profit_margin = profit_margin
+
+    @staticmethod
+    def generate_niche_markets(num_markets):
+        niche_markets = []
+        for _ in range(num_markets):
+            name = random.choice(Config.POSSIBLE_MARKETS)  # random market field
+            demand = random.randint(50, 200)  # random demand
+            competition = random.randint(10, 100)  # random competition
+            profit_margin = round(random.uniform(0.1, 0.6), 2)  # random profit_margin
+            niche_markets.append(NicheMarket(name, demand, competition, profit_margin))
+        return niche_markets
+
+    def calculate_attractiveness(self):
+        return self.demand * self.profit_margin / (self.competition + 1)  # Avoid division by zero
+
+
 class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
-    def __init__(self, talent: float, initial_funds: float):
+    def __init__(self, talent: float, initial_funds: float, skills: list, risk_tolerance: float ):
         self.set_funds(initial_funds)
         self.talent = talent
         self.employer: Optional[Company] = None
         self.salary = Config.FUNDS_PRECISION(0)
         self.owning_company: list[Company] = []
+        self.risk_tolerance = risk_tolerance
+        self.skills = skills
 
         self.expenses = 0
 
@@ -95,7 +127,19 @@ class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISIO
     def decide_purchase(self, products: ProductGroup) -> Optional[Product]:
         if not products:
             return None
-        
+
+    def choose_niche(self, niches):
+        niches = NicheMarket.generate_niche_markets(500)
+        best_niche = None
+        best_score = 0
+        for niche in niches:
+            if niche.field in self.skills:
+                score = niche.calculate_attractiveness() * self.risk_tolerance
+                if score > best_score:
+                    best_score = score
+                    best_niche = niche
+        return best_niche
+
         product_scores = np.array([self.score_product(p) for p in products])
         sum_product_scores = product_scores.sum()
 
@@ -227,7 +271,12 @@ class Economy:
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(Config.TALENT_MEAN, Config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(Config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
-        return [Individual(t, f) for t, f in zip(talents, initial_funds)]
+        risk_tolerance = [round(uniform(0.5, 2.0), 2) for _ in range(num_individuals)]
+        skills = list[set(choices(Config.POSSIBLE_MARKETS, k=Config.MAX_SKILLS))]
+
+        return [Individual(t, f, skills= s, risk_tolerance= r) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
+
+
 
     def _create_companies(self, num_companies: int) -> List[Company]:
         companies = []
@@ -296,8 +345,9 @@ class Economy:
 
         # Start new companies
         for individual in self.individuals:
+            be_entrepreneur = Individual.choose_niche(individual, niches=Config.POSSIBLE_MARKETS)
             # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > Config.MIN_WEALTH_FOR_STARTUP and random.random() < 0.01:
+            if individual.funds > Config.MIN_WEALTH_FOR_STARTUP and be_entrepreneur:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
@@ -518,12 +568,34 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=10000,
+        num_individuals= 10000,
         num_companies=50,
         num_steps=1000,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
     )
+#10000
+
+
+# if __name__ == "__main__":
+#     markets = NicheMarket.generate_niche_markets(10)
+#     num_individuals = 3
+#     for market in markets:
+#         print(f"Market: {market.field}, Demand: {market.demand}, "
+#               f"Competition: {market.competition}, "
+#               f"Profit Margin: {market.profit_margin}")
+
+
+
+
+
+
+
+
+
+
+
+
 
     # Load simulation state (optional)
     # economy = Economy.load_state("economy_simulation.pkl")
