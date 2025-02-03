@@ -1,253 +1,28 @@
 import os
 import pickle
 import random
-import uuid
-from dataclasses import dataclass
-from typing import List, Optional, Union, Any, Tuple, Dict
+from typing import List, Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from utils.genericObjects import NamedObject, FundsObject
-
-
-# Configuration
-class Config:
-    # Individual settings
-    INITIAL_FUNDS_INDIVIDUAL = 1000  # Initial funds for individuals
-    FUNDS_PRECISION = np.float64 # Object used to store funds (int or float like)
-    TALENT_MEAN = 100  # Mean talent (IQ-like)
-    TALENT_STD = 15  # Standard deviation of talent
-
-    # Company settings
-    INITIAL_FUNDS_COMPANY = 5000000  # Increased initial funds
-    MIN_COMPANY_SIZE = 5  # Minimum initial company size
-    MAX_COMPANY_SIZE = 20  # Maximum initial company size
-    SALARY_FACTOR = 100  # Salary = talent * SALARY_FACTOR
-    DIVIDEND_RATE = 0.1  # 10% of profit paid as dividends
-    PROFIT_MARGIN_FOR_HIRING = 1.5  # Higher margin for hiring
-    BANKRUPTCY_THRESHOLD = 1000  # Companies can go slightly negative before bankruptcy
-
-    # Entrepreneurship settings
-    STARTUP_COST_FACTOR = 0.5  # Fraction of wealth used to start a company
-    MIN_WEALTH_FOR_STARTUP = 10000  # Minimum wealth to start a company
-
-    # Math
-    EPSILON = 1e-6
-
-
-class Product(NamedObject):
-    def __init__(self, company: 'Company', price: Union[int, float]=1, quality: Union[int, float]=1):
-        self.quality = quality
-        self.price = price
-        self.company = company.name
-    def __repr__(self):
-        return f"{__class__.__name__}({self.__dict__})"
-
-
-class ProductGroup(tuple):
-    def __new__(cls, products):
-        # Check if all elements is a valid product
-        if not all(isinstance(p, Product) for p in products):
-            raise ValueError("All elements in the product group must be of type Product.")
-
-        # Create a new instance of the tuple
-        return super().__new__(cls, products)
-        
-    def __init__(self, products: Tuple[Product]):
-        # self.quality_min = min(self.all_quality)
-        self.quality_max = max(self.all_quality)
-        # self.quality_range = self.quality_max - self.quality_min
-    
-    @property
-    def all_quality(self) -> tuple:
-        return tuple(p.quality for p in self)
-    @property
-    def all_price(self) -> tuple:
-        return tuple(p.quality for p in self)
-
-    def get_quality_normalized(self, product: Product) -> float:
-        return product.quality / self.quality_max
-
-
-class Individual(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
-    def __init__(self, talent: float, initial_funds: float):
-        self.set_funds(initial_funds)
-        self.talent = talent
-        self.employer: Optional[Company] = None
-        self.salary = Config.FUNDS_PRECISION(0)
-        self.owning_company: list[Company] = []
-
-        self.expenses = 0
-
-    @property
-    def income(self):
-        return self.salary + sum(c.dividend for c in self.owning_company)
-
-    def make_purchase(self, companies: List['Company'], product:Product):
-        for c in companies:
-            if product.company is c.name:
-                self.transfer_funds_to(c, product.price)
-                c.revenue += product.price
-
-    def score_product(self, product: Product) -> float:
-        return np.tanh((self.funds + self.income) / product.price) * product.quality if self.can_afford(product.price) else 0
-
-    def decide_purchase(self, products: ProductGroup) -> Optional[Product]:
-        if not products:
-            return None
-        
-        product_scores = np.array([self.score_product(p) for p in products])
-        sum_product_scores = product_scores.sum()
-
-        if sum_product_scores == 0:
-            return None
-
-        chosen_product: Product = np.random.choice(products, p=product_scores/sum_product_scores)
-        return chosen_product
-
-    def find_job(self, companies: List['Company']):
-        # TODO: refine find job logic, hiring, firing, company compnay conflict, company indiviual conflict, individual individual conflict
-        if self.employer is None:
-            for company in companies:
-                if company.hire_employee(self, self.talent * Config.SALARY_FACTOR):
-                    break
-
-    def estimate_runout(self) -> Optional[int]:
-        # Estimate how many time steps until the individual runs out of funds
-        est = self.funds / (self.income - self.expenses)
-        return int(est) if est > 0 else None
-
-    def self_evaluate(self, products: List[Product]) -> float:
-        # Evaluation based on how much funds the individual has and the product that they are purchasing
-        pass
-
-
-class Company(NamedObject, FundsObject, funds_precision=Config.FUNDS_PRECISION):
-    def __init__(self, owner: Individual, initial_funds: float=0):
-        self.set_funds(initial_funds)
-        self.owner = owner
-        owner.owning_company.append(self)
-        
-        self.employees: List[Individual] = []
-        self.product = Product(self)
-        self.revenue = Config.FUNDS_PRECISION(0)
-        self.raw_materials: List[Product] = []
-        self.max_employees = random.randint(Config.MIN_COMPANY_SIZE, Config.MAX_COMPANY_SIZE)
-        self.bankruptcy = False
-        self.profit_margin = 0.2    # (1 + profit margin) * price * sales = revenue  TODO: smart margin
-
-    @property
-    def total_salary(self):
-        return sum(emp.salary for emp in self.employees)
-
-    @property
-    def total_material_cost(self):
-        return sum(product.price for product in self.raw_materials)
-
-    @property
-    def costs(self):
-        return self.total_salary + self.total_material_cost
-
-    @property
-    def profit(self):
-        return self.revenue - self.costs
-
-    @property
-    def dividend(self):
-        return self.profit * Config.DIVIDEND_RATE if self.profit > 0 else 0
-
-    def calculate_product_quality(self) -> float:
-        if not self.employees:
-            return 0.0
-
-        # Base quality from employees with diminishing returns
-        employee_contribution = sum(emp.talent for emp in self.employees)
-        diminishing_factor_employee = np.log(len(self.employees) + 1)
-        base_quality_employee = employee_contribution / (diminishing_factor_employee + Config.EPSILON)
-
-        # Additional quality from raw_materials
-        base_quality_raw_material = 0
-        if len(self.raw_materials) > 1:
-            base_quality_raw_material = np.median(product.quality for product in self.raw_materials)
-        return base_quality_employee + base_quality_raw_material
-
-    def estimate_sales(self, population: int, company_count: int) -> float:
-        # TODO: Smarter estimate sales 
-        return population / company_count
-
-    def update_product_attributes(self, population: int, company_count: int):
-        # Update product quality and price
-        self.product.quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
-        self.product.price = max(1, self.costs * (1 + self.profit_margin)) / self.estimate_sales(population=population, company_count=company_count)  # Ensure price >= 1
-
-    def hire_employee(self, candidate: Individual, salary: float) -> bool:
-        if self.funds >= salary and len(self.employees) < self.max_employees:
-            candidate.employer = self
-            candidate.salary = salary
-            self.employees.append(candidate)
-            return True
-        return False
-
-    def fire_employee(self, employee: Individual):
-        if employee in self.employees:
-            self.employees.remove(employee)
-            employee.employer = None
-            employee.salary = 0.0
-
-    # fix zero raw_material issue
-    def find_raw_material(self, potential_raw_materials: List[Product]):
-        if self.product.quality == 1 or not self.raw_materials:
-            self.raw_materials.append(random.choice(potential_raw_materials))
-        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON)*10:
-            self.raw_materials.append(random.choice(potential_raw_materials))
-
-    # fix forever growing raw_material issue
-    def remove_raw_material(self):
-        if len(self.raw_materials) > 1 and random.random() < 1/np.log10(self.product.quality + Config.EPSILON)/10:
-            self.raw_materials.remove(random.choice(self.raw_materials))
-
-    def check_bankruptcy(self) -> bool:
-        if self.funds < self.costs and len(self.raw_materials) > 0:
-            # Reduce product cost before firing employees
-            self.raw_materials.remove(sorted(list(self.raw_materials), key=lambda x: x.price, reverse=True)[0])
-            if self.funds < self.costs:
-                # Fire all employees
-                for employee in self.employees:
-                    self.fire_employee(employee)
-                # The owner runs with leftover company funds
-                self.transfer_funds_to(self.owner, self.funds)
-                self.owner.owning_company.remove(self)
-                self.bankruptcy = True
-                return True
-        return False
-
-    def print_statistics(self):
-        stats = (
-            f"UUID: {self.name}, "
-            f"Owner: {self.owner.name}, Funds: {self.funds:.2f}, "
-            f"Employees: {len(self.employees)}/{self.max_employees}, "
-            f"Total Salary: {sum(emp.salary for emp in self.employees):.2f}, "
-            f"Raw Materials: {len(self.raw_materials)}, "
-            f"Product Quality: {self.product.quality:.2f}, Product Price: {self.product.price:.2f}, "
-            f"Costs: {self.costs:.2f}, Revenue: {self.revenue:.2f}, Dividends: {self.dividend:.2f}, "
-            f"Bankruptcy: {self.bankruptcy}"
-        )
-        print(stats)
+from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
 
 
 class Economy:
-    def __init__(self, num_individuals: int, num_companies: int):
-        self.individuals = self._create_individuals(num_individuals)
-        self.companies = self._create_companies(num_companies)
+    def __init__(self, config: Config = Config):
+        self.config = config
+
+        self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
+        self.companies = self._create_companies(self.config.NUM_COMPANY)
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
-        talents = np.random.normal(Config.TALENT_MEAN, Config.TALENT_STD, num_individuals)
-        initial_funds = np.random.exponential(Config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
-        return [Individual(t, f) for t, f in zip(talents, initial_funds)]
+        talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
+        initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
+        return [Individual(t, f, self.config) for t, f in zip(talents, initial_funds)]
 
     def _create_companies(self, num_companies: int) -> List[Company]:
         companies = []
@@ -256,15 +31,17 @@ class Economy:
         for _ in range(num_companies):
             owner = random.choice(list(available_workers))
             available_workers.remove(owner)
-            initial_funds = np.random.exponential(Config.INITIAL_FUNDS_COMPANY)
+            initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_COMPANY)
             company = Company(owner, initial_funds)
 
             # Hire initial employees
             num_initial_employees = min(company.max_employees, len(available_workers), random.randint(1, 10))
-            potential_employees = sorted(list(available_workers), key=lambda x: x.talent, reverse=True)[:int(len(available_workers) * 0.5)]
+            potential_employees = sorted(list(available_workers), key=lambda x: x.talent, reverse=True)[
+                                  :int(len(available_workers) * 0.5)]
 
             if potential_employees:
-                initial_employees = random.sample(potential_employees, min(num_initial_employees, len(potential_employees)))
+                initial_employees = random.sample(potential_employees,
+                                                  min(num_initial_employees, len(potential_employees)))
                 for employee in initial_employees:
                     initial_salary = 50 + employee.talent * 0.5
                     if company.hire_employee(employee, initial_salary):
@@ -324,7 +101,8 @@ class Economy:
         market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
         for individual in self.individuals:
-            if individual.funds > Config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
+            # TODO: Instead of random chance of starting a new company, consider the current market demands
+            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
@@ -335,8 +113,8 @@ class Economy:
         self.stats.collect_statistics(self)
 
     def start_new_company(self, individual: Individual):
-        if individual.funds > Config.MIN_WEALTH_FOR_STARTUP:
-            initial_funds = individual.funds * Config.STARTUP_COST_FACTOR
+        if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP:
+            initial_funds = individual.funds * self.config.STARTUP_COST_FACTOR
             new_company = Company(individual)
             individual.transfer_funds_to(new_company, initial_funds)
             self.companies.append(new_company)
@@ -344,12 +122,12 @@ class Economy:
             self.stats.num_new_companies += 1  # Increment new company counter
 
     def adjust_workforce(self, company: Company):
-        if company.revenue > company.costs * Config.PROFIT_MARGIN_FOR_HIRING:
+        if company.revenue > company.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
             # Hire new employees
             potential_employees = [ind for ind in self.individuals if ind.employer is None]
             if potential_employees:
                 new_employee = max(potential_employees, key=lambda x: x.talent)
-                company.hire_employee(new_employee, new_employee.talent * Config.SALARY_FACTOR)
+                company.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
         elif company.revenue < company.costs:
             # Fire employees
             if company.employees:
@@ -395,14 +173,16 @@ class EconomyStats:
     @property
     def dict_scalar_attributes(self) -> Dict:
         return {attr: value for attr, value in self.__dict__.items() if isinstance(value, (int, float))}
-    
+
     @property
     def dict_histogram_attributes(self) -> Dict:
-        return {attr: self.__dict__[attr] for attr in ['all_company_funds', 'all_individual_funds', 'all_product_prices', 'all_salaries']}
+        return {attr: self.__dict__[attr] for attr in
+                ['all_company_funds', 'all_individual_funds', 'all_product_prices', 'all_salaries']}
 
     @property
     def dict_time_series_attributes(self) -> Dict:
-        return {attr: value for attr, value in self.__dict__.items() if isinstance(value, list) and attr not in self.dict_histogram_attributes}
+        return {attr: value for attr, value in self.__dict__.items() if
+                isinstance(value, list) and attr not in self.dict_histogram_attributes}
 
     def calculate_gini(self, wealths: List[float]) -> float:
         sorted_wealths = sorted(wealths)
@@ -411,7 +191,7 @@ class EconomyStats:
             return 0
         index = np.arange(1, n + 1)
         return ((2 * index - n - 1) * sorted_wealths).sum() / (n * sum(sorted_wealths))
-    
+
     def save_stats(self, file):
         with open(file, 'wb') as f:
             pickle.dump(self, f)
@@ -420,7 +200,7 @@ class EconomyStats:
         individual_wealths = [ind.funds for ind in economy.individuals]
         company_wealths = [comp.funds for comp in economy.companies]
         employed = len([ind for ind in economy.individuals if ind.employer])
-        
+
         self.individual_wealth_gini.append(self.calculate_gini(individual_wealths))
         self.avg_individual_wealth.append(np.mean(individual_wealths))
         self.sum_individual_wealth.append(np.sum(individual_wealths))
@@ -455,14 +235,16 @@ def run_simulation(
         state_pickle_path: str = "economy_simulation.pkl",
         resume_state: bool = False,
 ) -> Economy:
-
     # Load simulation state (optional)
     if resume_state and os.path.exists(state_pickle_path):
         economy = Economy.load_state("economy_simulation.pkl")
         print(f"Resuming simulation from saved state: {state_pickle_path}")
     else:
-        economy = Economy(num_individuals, num_companies)
-    for _ in tqdm(range(num_steps-economy.stats.step), desc="Simulating economy"):
+        economy = Economy(Config(
+            NUM_INDIVIDUAL=num_individuals,
+            NUM_COMPANY=num_companies,
+        ))
+    for _ in tqdm(range(num_steps - economy.stats.step), desc="Simulating economy"):
         economy.simulate_step()
         # economy.all_companies[0].print_statistics()
         economy.stats.save_stats("simulation_stats.pkl")
@@ -549,9 +331,9 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=10000,
+        num_individuals=1000,
         num_companies=50,
-        num_steps=2000,
+        num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
     )
