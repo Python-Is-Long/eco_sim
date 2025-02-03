@@ -74,7 +74,7 @@ class Economy:
         for individual in self.individuals:
             chosen_product = individual.decide_purchase(all_products)
             if chosen_product:
-                individual.make_purchase(chosen_product)
+                individual.make_purchase(self.companies, chosen_product)
                 individual.expenses = chosen_product.price
                 # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
 
@@ -331,9 +331,9 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=100,
-        num_companies=5,
-        num_steps=1000,
+        num_individuals=10000,
+        num_companies=50,
+        num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
     )
