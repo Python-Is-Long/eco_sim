@@ -1,5 +1,5 @@
 import random
-from typing import List, Optional, Union, Iterable, Callable
+from typing import List, Optional, Union, Iterable, Callable, Set
 
 import numpy as np
 
@@ -131,7 +131,7 @@ class ProductGroup(tuple):
 
 
 class Individual(FundsObject, NamedObject):
-    def __init__(self, talent: float, initial_funds: float, skills: List[int], risk_tolerance: float, configuration: Config = Config):
+    def __init__(self, talent: float, initial_funds: float, skills: Set[int], risk_tolerance: float, configuration: Config = Config):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,

@@ -23,7 +23,7 @@ class Economy:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
         risk_tolerance = [round(random.uniform(0.5, 2.0), 2) for _ in range(num_individuals)]
-        skills = list[set(random.choices(Config.POSSIBLE_MARKETS, k=Config.MAX_SKILLS))]
+        skills = [set(random.choices(Config.POSSIBLE_MARKETS, k=Config.MAX_SKILLS)) for _ in range(num_individuals)]
         return [Individual(t, f, skills=s, risk_tolerance=r, configuration=self.config) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
 
     def _create_companies(self, num_companies: int) -> List[Company]:
