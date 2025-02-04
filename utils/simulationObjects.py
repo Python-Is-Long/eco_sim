@@ -27,8 +27,10 @@ class Config:
     PROFIT_MARGIN_FOR_HIRING: Union[int, float] = 1.5  # Higher margin for hiring
 
     # Entrepreneurship settings
+    MAX_SKILLS = 3
     STARTUP_COST_FACTOR: float = 0.5  # Fraction of wealth used to start a company
     MIN_WEALTH_FOR_STARTUP: Union[int, float] = 10000  # Minimum wealth to start a company
+    POSSIBLE_MARKETS = list(range(0, 10))
 
     # Math
     EPSILON = 1e-6
@@ -36,6 +38,28 @@ class Config:
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+
+class NicheMarket:
+    def __init__(self, field, demand, competition, profit_margin):
+        self.field = field
+        self.demand = demand
+        self.competition = competition
+        self.profit_margin = profit_margin
+
+    @staticmethod
+    def generate_niche_markets(num_markets):
+        niche_markets = []
+        for _ in range(num_markets):
+            name = random.choice(Config.POSSIBLE_MARKETS)  # random market field
+            demand = random.randint(50, 200)  # random demand
+            competition = random.randint(10, 100)  # random competition
+            profit_margin = round(random.uniform(0.1, 0.6), 2)  # random profit_margin
+            niche_markets.append(NicheMarket(name, demand, competition, profit_margin))
+        return niche_markets
+
+    def calculate_attractiveness(self):
+        return self.demand * self.profit_margin / (self.competition + 1)  # Avoid division by zero
 
 
 class Product(NamedObject):
@@ -107,7 +131,7 @@ class ProductGroup(tuple):
 
 
 class Individual(FundsObject, NamedObject):
-    def __init__(self, talent: float, initial_funds: float, configuration: Config = Config):
+    def __init__(self, talent: float, initial_funds: float, skills: List[int], risk_tolerance: float, configuration: Config = Config):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
@@ -117,6 +141,8 @@ class Individual(FundsObject, NamedObject):
         self.employer: Optional[Company] = None
         self.salary = configuration.FUNDS_PRECISION(0)
         self.owning_company: list[Company] = []
+        self.risk_tolerance = risk_tolerance
+        self.skills = skills
 
         self.expenses = 0
 
@@ -133,6 +159,18 @@ class Individual(FundsObject, NamedObject):
     def score_product(self, product: Product) -> float:
         return np.tanh((self.funds + self.income) / product.price) * product.quality if self.can_afford(
             product.price) else 0
+
+    def choose_niche(self, niches):
+        niches = NicheMarket.generate_niche_markets(500)
+        best_niche = None
+        best_score = 0
+        for niche in niches:
+            if niche.field in self.skills:
+                score = niche.calculate_attractiveness() * self.risk_tolerance
+                if score > best_score:
+                    best_score = score
+                    best_niche = niche
+        return best_niche
 
     def decide_purchase(self, products: ProductGroup) -> Optional[Product]:
         if not products:

@@ -22,7 +22,9 @@ class Economy:
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
-        return [Individual(t, f, self.config) for t, f in zip(talents, initial_funds)]
+        risk_tolerance = [round(random.uniform(0.5, 2.0), 2) for _ in range(num_individuals)]
+        skills = list[set(random.choices(Config.POSSIBLE_MARKETS, k=Config.MAX_SKILLS))]
+        return [Individual(t, f, skills=s, risk_tolerance=r, configuration=self.config) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
 
     def _create_companies(self, num_companies: int) -> List[Company]:
         companies = []
@@ -101,8 +103,9 @@ class Economy:
         market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
         for individual in self.individuals:
+            be_entrepreneur = Individual.choose_niche(individual, niches=Config.POSSIBLE_MARKETS)
             # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
+            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential and be_entrepreneur:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
@@ -331,7 +334,7 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=1000,
+        num_individuals=10000,
         num_companies=50,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
