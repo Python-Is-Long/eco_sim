@@ -28,7 +28,7 @@ class Config:
 
     # Entrepreneurship settings
     STARTUP_COST_FACTOR: float = 0.5  # Fraction of wealth used to start a company
-    MIN_WEALTH_FOR_STARTUP: Union[int, float] = 10000  # Minimum wealth to start a company
+    MIN_WEALTH_FOR_STARTUP: Union[int, float] = 100000  # Minimum wealth to start a company
 
     # Math
     EPSILON = 1e-6
@@ -114,6 +114,7 @@ class Individual(FundsObject, NamedObject):
             funds_precision=configuration.FUNDS_PRECISION
         )
         self.talent = talent
+        self.unemployed_state = 0
         self.employer: Optional[Company] = None
         self.salary = configuration.FUNDS_PRECISION(0)
         self.owning_company: list[Company] = []
@@ -147,10 +148,13 @@ class Individual(FundsObject, NamedObject):
         chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
         return chosen_product
 
-    def find_job(self, companies: List['Company']):
+    def find_job(self, companies: List['Company'], unemployed_state):
+        # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
+        ego_value = [1, 0.95, 0.9, 0.85, 0.8, 0.75]
+        # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
         if self.employer is None:
             for company in companies:
-                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR):
+                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[unemployed_state]):
                     break
 
     def estimate_runout(self) -> Optional[int]:
@@ -229,10 +233,12 @@ class Company(FundsObject, NamedObject):
                               self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
 
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
+        #TODO: allow company to grow indefinitely
         if self.funds >= salary and len(self.employees) < self.max_employees:
             candidate.employer = self
             candidate.salary = salary
             self.employees.append(candidate)
+            candidate.unemployed_state=0
             return True
         return False
 
@@ -258,6 +264,7 @@ class Company(FundsObject, NamedObject):
             self.raw_materials.remove(random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
+        # TODO: if a company has no worker for over x step, bankrupt
         if self.funds < self.costs and len(self.raw_materials) > 0:
             # Reduce product cost before firing employees
             self.raw_materials.remove(sorted(list(self.raw_materials), key=lambda x: x.price, reverse=True)[0])
