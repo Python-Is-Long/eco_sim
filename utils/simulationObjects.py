@@ -1,7 +1,9 @@
 import random
+import heapq
 from typing import List, Optional, Union, Iterable, Callable
 
 import numpy as np
+from packaging.utils import canonicalize_name
 
 from utils.genericObjects import NamedObject, FundsObject
 
@@ -25,6 +27,8 @@ class Config:
     SALARY_FACTOR: Union[int, float] = 100  # Salary = talent * SALARY_FACTOR
     DIVIDEND_RATE: float = 0.1  # 10% of profit paid as dividends
     PROFIT_MARGIN_FOR_HIRING: Union[int, float] = 1.5  # Higher margin for hiring
+    MIN_SALARY_THRESHOLD = 4500
+    MAX_SALARY_THRESHOLD = 15000
 
     # Entrepreneurship settings
     STARTUP_COST_FACTOR: float = 0.5  # Fraction of wealth used to start a company
@@ -120,6 +124,36 @@ class Individual(FundsObject, NamedObject):
 
         self.expenses = 0
 
+    def evaluate_opportunity(self, base_probability: float) -> bool:
+        """Determine if individuals can be entrepreneurs"""
+        wealth_factor = min(1.0, self.funds / (self.config.MIN_WEALTH_FOR_STARTUP * 2))
+        talent_factor = np.tanh(self.talent / 150)
+
+        startup_probability = base_probability * (0.5 + 0.3 * wealth_factor + 0.2 * talent_factor)
+        # 0.5 base chance = 50% # 0.3 wealth influence -> 30% # 0.2 -> talent influence ->20%
+        return np.random.random() < startup_probability
+
+    def start_company(self, all_individuals: List['Individual']) -> Optional['Company']:
+        """Individual decides to start a business and establish a company"""
+        if self.funds < self.config.MIN_WEALTH_FOR_STARTUP:
+            return None
+
+        initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
+        new_company = Company(self, initial_funds)
+        self.transfer_funds_to(new_company, initial_funds)
+
+        # recruiting
+        available_workers = [ind for ind in all_individuals if ind != self and ind.employer is None]
+        num_initial_employees = min(new_company.max_employees, len(available_workers), random.randint(1, 10))
+        potential_employees = sorted(available_workers, key=lambda x: x.talent, reverse=True)[:num_initial_employees]
+
+        for employee in potential_employees:
+            initial_salary = 50 + employee.talent * 0.5
+            if new_company.hire_employee(employee, initial_salary):
+                available_workers.remove(employee)
+
+        return new_company
+
     @property
     def income(self):
         return self.salary + sum(c.dividend for c in self.owning_company)
@@ -148,10 +182,38 @@ class Individual(FundsObject, NamedObject):
         return chosen_product
 
     def find_job(self, companies: List['Company']):
-        if self.employer is None:
+        if self.employer:
+            current_salary = self.salary
+            better_offers = []
             for company in companies:
-                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR):
-                    break
+                company_offered = company.calculate_salary_offer(self)
+                if company_offered and company_offered > current_salary:
+                    better_offers.append((company_offered, company))
+
+            if better_offers:
+                better_offers.sort(reverse=True, key=lambda  x:x[0])
+                best_offer_salary, best_company = better_offers[0]
+
+                if random.random() < 0.5 or (best_offer_salary > current_salary * 1.2):
+                    self.employer.fire_employee(self)
+                    best_company.hire_employee(self)
+            return
+
+        job_offer = [] # saving all the offers
+        for company in companies:
+            salary_offer = company.calculate_salary_offer(self)
+            if salary_offer:
+                heapq.heappush(job_offer, (-salary_offer, company))
+
+        if job_offer:
+            best_offer = heapq.heappop(job_offer)
+            _, chosen_company = best_offer
+            chosen_company.hire_employee(self)
+
+        # if self.employer is None:
+        #     for company in companies:
+        #         if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR):
+        #             break
 
     def estimate_runout(self) -> Optional[int]:
         # Estimate how many time steps until the individual runs out of funds
@@ -171,7 +233,7 @@ class Company(FundsObject, NamedObject):
             funds_precision=self.config.FUNDS_PRECISION
         )
 
-        self.set_funds(initial_funds)
+        self.funds = self.set_funds(initial_funds)
         self.owner = owner
         owner.owning_company.append(self)
 
@@ -182,6 +244,9 @@ class Company(FundsObject, NamedObject):
         self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
         self.profit_margin = 0.2  # (1 + profit margin) * price * sales = revenue  TODO: smart margin
+        self.min_salary_threshold = Config.MIN_SALARY_THRESHOLD
+        self.max_salary_threshold = Config.MAX_SALARY_THRESHOLD
+
 
     @property
     def total_salary(self):
@@ -229,12 +294,66 @@ class Company(FundsObject, NamedObject):
                               self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
 
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
-        if self.funds >= salary and len(self.employees) < self.max_employees:
-            candidate.employer = self
-            candidate.salary = salary
-            self.employees.append(candidate)
-            return True
-        return False
+        if len(self.employees) >= self.max_employees:
+            return False # company full
+
+        offered_salary = self.calculate_salary_offer(candidate)
+        if offered_salary is None or self.funds < offered_salary:
+            return False
+
+        # 計算性價比：才能值 / 薪資
+        talent_to_salary_ratio = candidate.talent / offered_salary if offered_salary > 0 else 0
+
+        # 公司會計算目前雇用員工的平均性價比
+        if self.employees:
+            avg_ratio = (sum(emp.talent / emp.salary for emp in self.employees) / len(
+                self.employees)) if self.employees else None
+        else:
+            avg_ratio = 0  # 沒有員工時，不比較性價比
+
+        # 如果新員工的性價比比目前員工的平均值還低，則有 50% 機率不錄用
+        if avg_ratio is not None and talent_to_salary_ratio < avg_ratio and random.random() > 0.5:
+            return False  # 為了保留高性價比，50% 機率不錄用
+
+        # 確保公司不會把所有錢都用來雇用 1-2 個超高薪的員工
+        if len(self.employees) > 0 and offered_salary > self.funds * 0.3:
+            return False  # 不能讓單一員工的薪資超過總資金的 30%
+
+        # 選擇最佳員工（基於性價比）
+        self.employees.append(candidate)
+        candidate.employer = self
+        candidate.salary = offered_salary
+        self.funds -= offered_salary
+        return True
+
+        # if self.funds >= salary and len(self.employees) < self.max_employees:
+        #     candidate.employer = self
+        #     candidate.salary = salary
+        #     self.employees.append(candidate)
+        #     return True
+        # return False
+
+    def calculate_salary_offer(self, candidate: Individual, salary_factor: Config.SALARY_FACTOR) -> Optional[float]:
+        base_salary = candidate.talent * np.random.uniform(80, salary_factor)
+        # 公司會根據市場狀況（可用資金 & 已雇用人數）微調薪資
+        demand_factor = 1.0 + (0.1 * (self.max_employees - len(self.employees)) / self.max_employees)  # 需求越大薪水越高
+        financial_factor = min(1.2, max(0.8, self.funds / (self.max_employees * self.max_salary_threshold)))  # 根據資金調整
+        negotiation_factor = np.random.uniform(0.9, 1.1)  # 隨機調整，模擬談判
+
+        # 計算最終薪資
+        expected_salary = base_salary * demand_factor * financial_factor * negotiation_factor
+
+        # 如果薪資過低，調整為最低薪資門檻
+        # if expected_salary < self.min_salary_threshold:
+        expected_salary = self.min_salary_threshold
+
+        # 如果薪資超過最大範圍，不考慮
+        if expected_salary < self.min_salary_threshold:
+            expected_salary = self.min_salary_threshold
+        if expected_salary > self.max_salary_threshold or self.funds < expected_salary:
+            return None
+
+        return expected_salary
 
     def fire_employee(self, employee: Individual):
         if employee in self.employees:

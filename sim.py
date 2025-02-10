@@ -19,6 +19,23 @@ class Economy:
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
 
+    def entrepreneur(self):
+        """determine entrepreneurs based on market demand and individual conditions"""
+        if not self.individuals:
+            return
+
+        # Precompute market potential
+        market_potential = np.log10(len(self.individuals)) / max(1, len(self.companies))
+        base_probability = min(1.0, market_potential * 0.2)
+
+        for individual in self.individuals:
+            if individual.evaluate_opportunity(base_probability):  # start business or not
+                new_company = individual.start_company(self.individuals)
+                if new_company:
+                    self.companies.append(new_company)
+                    self.all_companies.append(new_company)
+                    self.stats.num_new_companies += 1
+
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
@@ -98,12 +115,14 @@ class Economy:
             if individual.employer is None:
                 individual.find_job(self.companies)
 
-        market_potential = np.log10(len(self.individuals)) / len(self.companies)
+        self.entrepreneur()
+
+        # market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
-        for individual in self.individuals:
-            # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
-                self.start_new_company(individual)
+        # for individual in self.individuals:
+        #     # TODO: Instead of random chance of starting a new company, consider the current market demands
+        #     if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential:
+        #         self.start_new_company(individual)
 
         # Adjust workforce for companies
         for company in self.companies:
@@ -112,14 +131,14 @@ class Economy:
         # Collect statistics
         self.stats.collect_statistics(self)
 
-    def start_new_company(self, individual: Individual):
-        if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP:
-            initial_funds = individual.funds * self.config.STARTUP_COST_FACTOR
-            new_company = Company(individual)
-            individual.transfer_funds_to(new_company, initial_funds)
-            self.companies.append(new_company)
-            self.all_companies.append(new_company)
-            self.stats.num_new_companies += 1  # Increment new company counter
+    # def start_new_company(self, individual: Individual):
+    #     if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP:
+    #         initial_funds = individual.funds * self.config.STARTUP_COST_FACTOR
+    #         new_company = Company(individual)
+    #         individual.transfer_funds_to(new_company, initial_funds)
+    #         self.companies.append(new_company)
+    #         self.all_companies.append(new_company)
+    #         self.stats.num_new_companies += 1  # Increment new company counter
 
     def adjust_workforce(self, company: Company):
         if company.revenue > company.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
@@ -339,8 +358,8 @@ if __name__ == "__main__":
     )
 
     # Load simulation state (optional)
-    # economy = Economy.load_state("economy_simulation.pkl")
+    economy = Economy.load_state("economy_simulation.pkl")
 
     # Plot results
     # plot_results(economy, save_path="economy_simulation_results.png")
-    # print_summary(economy)
+    print_summary(economy)
