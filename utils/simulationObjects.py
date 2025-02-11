@@ -6,6 +6,7 @@ import numpy as np
 from packaging.utils import canonicalize_name
 
 from utils.genericObjects import NamedObject, FundsObject
+from utils.calculation import calculate_choice_probabilities
 
 
 class Config:
@@ -19,6 +20,7 @@ class Config:
     INITIAL_FUNDS_INDIVIDUAL: Union[int, float] = 5000  # Initial funds for individuals
     TALENT_MEAN: Union[int, float] = 100  # Mean talent (IQ-like)
     TALENT_STD: Union[int, float] = 15  # Standard deviation of talent
+    TEMPERATURE_JOB_OFFER: float = 7.5 # lower temperature = more likely goes to higher pay job
 
     # Company settings
     INITIAL_FUNDS_COMPANY: Union[int, float] = 100000  # Increased initial funds
@@ -191,24 +193,25 @@ class Individual(FundsObject, NamedObject):
                     better_offers.append((company_offered, company))
 
             if better_offers:
-                better_offers.sort(reverse=True, key=lambda  x:x[0])
+                better_offers.sort(reverse=True, key=lambda x:x[0])
                 best_offer_salary, best_company = better_offers[0]
 
                 if random.random() < 0.5 or (best_offer_salary > current_salary * 1.2):
                     self.employer.fire_employee(self)
-                    best_company.hire_employee(self)
+                    best_company.hire_employee(self, salary=best_offer_salary)
             return
 
-        job_offer = [] # saving all the offers
+        companies_offering: List[Company] = []
+        job_offers: List[float] = []
+        # saving all the offers
         for company in companies:
-            salary_offer = company.calculate_salary_offer(self)
-            if salary_offer:
-                heapq.heappush(job_offer, (-salary_offer, company))
-
-        if job_offer:
-            best_offer = heapq.heappop(job_offer)
-            _, chosen_company = best_offer
-            chosen_company.hire_employee(self)
+            if offer := company.calculate_salary_offer(self):
+                companies_offering.append(company)
+                job_offers.append(offer)
+        if job_offers:
+            possibilities = calculate_choice_probabilities(offers=job_offers, temperature=Config.TEMPERATURE_JOB_OFFER)
+            chosen_index = np.random.choice(range(len(possibilities)), p=possibilities)
+            companies_offering[chosen_index].hire_employee(self, salary=job_offers[chosen_index])
 
         # if self.employer is None:
         #     for company in companies:
@@ -233,7 +236,7 @@ class Company(FundsObject, NamedObject):
             funds_precision=self.config.FUNDS_PRECISION
         )
 
-        self.funds = self.set_funds(initial_funds)
+        self.set_funds(initial_funds)
         self.owner = owner
         owner.owning_company.append(self)
 
@@ -297,7 +300,7 @@ class Company(FundsObject, NamedObject):
         if len(self.employees) >= self.max_employees:
             return False # company full
 
-        offered_salary = self.calculate_salary_offer(candidate)
+        offered_salary = self.calculate_salary_offer(candidate=candidate)
         if offered_salary is None or self.funds < offered_salary:
             return False
 
@@ -333,7 +336,7 @@ class Company(FundsObject, NamedObject):
         #     return True
         # return False
 
-    def calculate_salary_offer(self, candidate: Individual, salary_factor: Config.SALARY_FACTOR) -> Optional[float]:
+    def calculate_salary_offer(self, candidate: Individual, salary_factor: Union[int, float] = Config.SALARY_FACTOR) -> Optional[float]:
         base_salary = candidate.talent * np.random.uniform(80, salary_factor)
         # 公司會根據市場狀況（可用資金 & 已雇用人數）微調薪資
         demand_factor = 1.0 + (0.1 * (self.max_employees - len(self.employees)) / self.max_employees)  # 需求越大薪水越高
