@@ -13,7 +13,7 @@ from utils.database import DatabaseInfo, SimDatabase
 
 
 class Economy:
-    def __init__(self, db_info: DatabaseInfo, config: Config = Config):
+    def __init__(self, db_info: DatabaseInfo, config: Config = Config()):
         self.config = config
 
         self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
@@ -26,7 +26,7 @@ class Economy:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
         risk_tolerance = [round(random.uniform(0.5, 2.0), 2) for _ in range(num_individuals)]
-        skills = [set(random.choices(Config.POSSIBLE_MARKETS, k=Config.MAX_SKILLS)) for _ in range(num_individuals)]
+        skills = [set(random.choices(self.config.POSSIBLE_MARKETS, k=self.config.MAX_SKILLS)) for _ in range(num_individuals)]
         return [Individual(self, t, f, skills=s, risk_tolerance=r, configuration=self.config) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
 
     def _create_companies(self, num_companies: int) -> List[Company]:
@@ -109,7 +109,7 @@ class Economy:
         market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
         for individual in self.individuals:
-            be_entrepreneur = Individual.choose_niche(individual, niches=Config.POSSIBLE_MARKETS)
+            be_entrepreneur = Individual.choose_niche(individual, niches=self.config.POSSIBLE_MARKETS)
             # TODO: Instead of random chance of starting a new company, consider the current market demands
             if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential and be_entrepreneur:
                 self.start_new_company(individual)

@@ -62,10 +62,10 @@ class NicheMarket:
         self.profit_margin = profit_margin
 
     @staticmethod
-    def generate_niche_markets(num_markets):
+    def generate_niche_markets(num_markets, possible_markets):
         niche_markets = []
         for _ in range(num_markets):
-            name = random.choice(Config.POSSIBLE_MARKETS)  # random market field
+            name = random.choice(possible_markets)  # random market field
             demand = random.randint(50, 200)  # random demand
             competition = random.randint(10, 100)  # random competition
             profit_margin = round(random.uniform(0.1, 0.6), 2)  # random profit_margin
@@ -163,7 +163,7 @@ class IndividualReports(Reports):
 
 
 class Individual(FundsObject, NamedObject):
-    def __init__(self, sim:'Economy', talent: float, initial_funds: float, skills: Set[int], risk_tolerance: float, configuration: Config = Config):
+    def __init__(self, sim:'Economy', talent: float, initial_funds: float, skills: Set[int], risk_tolerance: float, configuration: Config = Config()):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
@@ -196,7 +196,7 @@ class Individual(FundsObject, NamedObject):
             product.price) else 0
 
     def choose_niche(self, niches):
-        niches = NicheMarket.generate_niche_markets(500)
+        niches = NicheMarket.generate_niche_markets(500, self.config.POSSIBLE_MARKETS)
         best_niche = None
         best_score = 0
         for niche in niches:
@@ -273,7 +273,7 @@ class CompanyReports(Reports):
 
 
 class Company(FundsObject, NamedObject):
-    def __init__(self, sim:'Economy', owner: Individual, initial_funds: float = 0, configuration: Config = Config):
+    def __init__(self, sim:'Economy', owner: Individual, initial_funds: float = 0, configuration: Config = Config()):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
@@ -320,7 +320,7 @@ class Company(FundsObject, NamedObject):
         # Base quality from employees with diminishing returns
         employee_contribution = sum(emp.talent for emp in self.employees)
         diminishing_factor_employee = np.log(len(self.employees) + 1)
-        base_quality_employee = employee_contribution / (diminishing_factor_employee + Config.EPSILON)
+        base_quality_employee = employee_contribution / (diminishing_factor_employee + self.config.EPSILON)
 
         # Additional quality from raw_materials
         base_quality_raw_material = 0
@@ -361,12 +361,12 @@ class Company(FundsObject, NamedObject):
 
         if self.product.quality == 1 or not self.raw_materials:
             self.raw_materials.append(random.choice(potential_materials))
-        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON) * 10:
+        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON) * 10:
             self.raw_materials.append(random.choice(potential_materials))
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
-        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + Config.EPSILON) / 10:
+        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON) / 10:
             self.raw_materials.remove(random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
