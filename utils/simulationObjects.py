@@ -1,10 +1,24 @@
 import random
-from typing import List, Optional, Union, Iterable, Callable, Set
+from dataclasses import dataclass
+from typing import List, Optional, Union, Iterable, Callable, Set, Any
+from typing import TYPE_CHECKING
+from uuid import UUID
+from abc import ABC, abstractmethod
 
 import numpy as np
 
 from utils.genericObjects import NamedObject, FundsObject
 
+if TYPE_CHECKING:
+    from sim import Economy
+
+@dataclass
+class Reports(ABC):
+    @staticmethod
+    @abstractmethod
+    def table_name():
+        """Returns what table should this report be stored in the database."""
+        pass
 
 class Config:
     """Default Settings"""
@@ -130,13 +144,33 @@ class ProductGroup(tuple):
         return product.quality / self.quality_max
 
 
+@dataclass
+class IndividualReports(Reports):
+    # Make sure each attribute has valid type annotation
+    step: int
+    name: str
+    funds: float
+    income: float
+    expenses: float
+    salary: float
+    talent: float
+    risk_tolerance: float
+    owning_company: list[str]
+
+    @staticmethod
+    def table_name():
+        return 'individual'
+
+
 class Individual(FundsObject, NamedObject):
-    def __init__(self, talent: float, initial_funds: float, skills: Set[int], risk_tolerance: float, configuration: Config = Config):
+    def __init__(self, sim:'Economy', talent: float, initial_funds: float, skills: Set[int], risk_tolerance: float, configuration: Config = Config):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
             funds_precision=configuration.FUNDS_PRECISION
         )
+        self.sim = sim
+
         self.talent = talent
         self.employer: Optional[Company] = None
         self.salary = configuration.FUNDS_PRECISION(0)
@@ -200,14 +234,48 @@ class Individual(FundsObject, NamedObject):
         # Evaluation based on how much funds the individual has and the product that they are purchasing
         pass
 
+    def report(self):
+        return IndividualReports(
+            step=self.sim.stats.step,
+            name=self.name,
+            funds=self.funds,
+            income=self.income,
+            expenses=self.expenses,
+            salary=self.salary,
+            talent=self.talent,
+            risk_tolerance=self.risk_tolerance,
+            owning_company=[c.name for c in self.owning_company],
+        )
+
+
+@dataclass
+class CompanyReports(Reports):
+    # Make sure each attribute has valid type annotation
+    step: int
+    name: str
+    owner: str
+    funds: np.float64
+    employees: list[str]
+    product: str
+    costs: float
+    revenue: float
+    profit: float
+    dividend: float
+    bankruptcy: bool
+
+    @staticmethod
+    def table_name():
+        return 'company'
+
 
 class Company(FundsObject, NamedObject):
-    def __init__(self, owner: Individual, initial_funds: float = 0, configuration: Config = Config):
+    def __init__(self, sim:'Economy', owner: Individual, initial_funds: float = 0, configuration: Config = Config):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
             funds_precision=self.config.FUNDS_PRECISION
         )
+        self.sim = sim
 
         self.set_funds(initial_funds)
         self.owner = owner
@@ -310,6 +378,21 @@ class Company(FundsObject, NamedObject):
                 self.bankruptcy = True
                 return True
             return False
+
+    def report(self):
+        return CompanyReports(
+            step=self.sim.stats.step,
+            name=self.name,
+            owner=self.owner.name,
+            funds=self.funds,
+            employees=[emp.name for emp in self.employees],
+            product=self.product.name,
+            costs=self.costs,
+            revenue=self.revenue,
+            profit=self.profit,
+            dividend=self.dividend,
+            bankruptcy=self.bankruptcy
+        )
 
     def print_statistics(self):
         stats = (

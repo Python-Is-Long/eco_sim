@@ -6,25 +6,28 @@ from typing import List, Dict
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
+import json
 
 from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
+from utils.database import DatabaseInfo, SimDatabase
 
 
 class Economy:
-    def __init__(self, config: Config = Config):
+    def __init__(self, db_info: DatabaseInfo, config: Config = Config):
         self.config = config
 
         self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
         self.companies = self._create_companies(self.config.NUM_COMPANY)
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
+        self.db = SimDatabase('ECOSIM', db_info)
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
         risk_tolerance = [round(random.uniform(0.5, 2.0), 2) for _ in range(num_individuals)]
         skills = [set(random.choices(Config.POSSIBLE_MARKETS, k=Config.MAX_SKILLS)) for _ in range(num_individuals)]
-        return [Individual(t, f, skills=s, risk_tolerance=r, configuration=self.config) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
+        return [Individual(self, t, f, skills=s, risk_tolerance=r, configuration=self.config) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
 
     def _create_companies(self, num_companies: int) -> List[Company]:
         companies = []
@@ -34,7 +37,7 @@ class Economy:
             owner = random.choice(list(available_workers))
             available_workers.remove(owner)
             initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_COMPANY)
-            company = Company(owner, initial_funds)
+            company = Company(self, owner, initial_funds)
 
             # Hire initial employees
             num_initial_employees = min(company.max_employees, len(available_workers), random.randint(1, 10))
@@ -112,13 +115,17 @@ class Economy:
         for company in self.companies:
             self.adjust_workforce(company)
 
+        # Insert reports into database
+        self.db.insert_reports([i.report() for i in self.individuals])
+        self.db.insert_reports([c.report() for c in self.companies])
+
         # Collect statistics
         self.stats.collect_statistics(self)
 
     def start_new_company(self, individual: Individual):
         if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP:
             initial_funds = individual.funds * self.config.STARTUP_COST_FACTOR
-            new_company = Company(individual)
+            new_company = Company(self, individual)
             individual.transfer_funds_to(new_company, initial_funds)
             self.companies.append(new_company)
             self.all_companies.append(new_company)
@@ -148,7 +155,6 @@ class Economy:
 
 
 class EconomyStats:
-
     def __init__(self):
         self.step = 0
         self.total_money = 0
@@ -243,7 +249,9 @@ def run_simulation(
         economy = Economy.load_state("economy_simulation.pkl")
         print(f"Resuming simulation from saved state: {state_pickle_path}")
     else:
-        economy = Economy(Config(
+        with open('db_info.json', 'r') as f:
+            db_info = json.load(f)
+        economy = Economy(DatabaseInfo(**db_info), config=Config(
             NUM_INDIVIDUAL=num_individuals,
             NUM_COMPANY=num_companies,
         ))
@@ -253,7 +261,7 @@ def run_simulation(
         economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
-        economy.save_state("economy_simulation.pkl")
+        # economy.save_state("economy_simulation.pkl")
     return economy
 
 
@@ -334,8 +342,8 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=10000,
-        num_companies=50,
+        num_individuals=100,
+        num_companies=5,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,

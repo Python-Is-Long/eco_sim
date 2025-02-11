@@ -7,7 +7,7 @@ class NamedObject:
     """A class that assigns a unique name to each instance."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.name = uuid.uuid4()
+        self.name = str(uuid.uuid4())
 
 
 class FundsObject:
