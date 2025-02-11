@@ -101,7 +101,10 @@ class Economy:
         # Individuals find jobs
         for individual in self.individuals:
             if individual.employer is None:
-                individual.find_job(self.companies)
+                individual.find_job(self.companies, individual.unemployed_state)
+
+            if individual.employer is None and individual.unemployed_state <5:
+                individual.unemployed_state += 1
 
         market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
@@ -143,6 +146,7 @@ class Economy:
             if company.employees:
                 employee_to_fire = random.choice(company.employees)
                 company.fire_employee(employee_to_fire)
+            # TODO: add a bankruptcy index every time when there's no worker to fire
 
     def save_state(self, filename: str):
         with open(filename, 'wb') as f:
@@ -173,6 +177,7 @@ class EconomyStats:
         self.new_companies_over_time = []
         self.avg_company_raw_materials = []
         self.avg_company_employees = []
+        self.all_employee_counts = []
 
         self.all_company_funds: List[List[float]] = []
         self.all_individual_funds: List[List[float]] = []
@@ -186,7 +191,7 @@ class EconomyStats:
     @property
     def dict_histogram_attributes(self) -> Dict:
         return {attr: self.__dict__[attr] for attr in
-                ['all_company_funds', 'all_individual_funds', 'all_product_prices', 'all_salaries']}
+                ['all_company_funds', 'all_individual_funds', 'all_product_prices', 'all_salaries', 'all_employee_counts']}
 
     @property
     def dict_time_series_attributes(self) -> Dict:
@@ -226,6 +231,7 @@ class EconomyStats:
         self.all_individual_funds.append([to_low_precision(i.funds) for i in economy.individuals])
         self.all_product_prices.append([to_low_precision(c.product.price) for c in economy.companies])
         self.all_salaries.append([to_low_precision(e.salary) for e in economy.individuals if e.employer])
+        self.all_employee_counts.append([len(c.employees) for c in economy.companies])
 
         if economy.companies:
             self.avg_product_quality.append(np.mean([c.product.quality for c in economy.companies]))
@@ -342,8 +348,8 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=100,
-        num_companies=5,
+        num_individuals=1000,
+        num_companies=50,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
