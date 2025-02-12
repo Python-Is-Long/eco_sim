@@ -109,6 +109,7 @@ class Economy:
             if individual.employer is None and individual.unemployed_state <5:
                 individual.unemployed_state += 1
 
+        # TODO: Handles case where len(self.companies) is 0
         market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
         for individual in self.individuals:
@@ -351,8 +352,8 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=1000,
-        num_companies=50,
+        num_individuals=100,
+        num_companies=5,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,

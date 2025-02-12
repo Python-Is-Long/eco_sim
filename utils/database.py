@@ -1,6 +1,7 @@
 import time
 from dataclasses import dataclass
 from typing import Any
+import re
 
 import clickhouse_connect
 
@@ -22,6 +23,12 @@ class DatabaseInfo:
 
 class SimDatabase:
     def __init__(self, db_info: DatabaseInfo, report_types: list[type[Reports]]):
+        """Create a new SimDatabase instance
+
+        Args:
+            db_info (DatabaseInfo): The database connection information
+            report_types (list[type[Reports]]): A list of the report types that the database will store
+        """
         self.client = clickhouse_connect.get_client(**db_info.__dict__)
         self.report_types = report_types
         self.tables = {}
@@ -56,7 +63,24 @@ class SimDatabase:
         for report_type in self.report_types:
             table_name = report_type.table_name()
             table_scheme = report_type.get_db_types()
-            self.client.command(create_table(table_name, table_scheme))
+
+            str_columns = [f"{name} {typ}" for name, typ in table_scheme.items()]
+            # Create the main table
+            self.client.command(f"""
+                -- Create the main table
+                CREATE TABLE {table_name} ({', '.join(str_columns)})
+                ENGINE = ReplacingMergeTree(step) ORDER BY name
+            """)
+            # Create the history table
+            self.client.command(f"""
+                CREATE TABLE {table_name}_history ({', '.join(str_columns)})
+                ENGINE = MergeTree() ORDER BY step
+            """)
+            # Make the history table a materialized view of the main table
+            self.client.command(f"""
+                CREATE MATERIALIZED VIEW {table_name}_mv TO {table_name}_history
+                AS SELECT * FROM {table_name}
+            """)
             self.tables[report_type] = list(table_scheme.keys())
         self._db_loaded = True
         return db_name
@@ -72,14 +96,21 @@ class SimDatabase:
         Raises:
             ValueError: If the database or any of the tables are not found or the tables does not match the expected schema
         """
+        # Get the list of existing databases
         existing_db = self.client.query('SHOW DATABASES').result_rows
+        existing_db = [db[0] for db in existing_db]
+
         if not exact_name:
             # Find the database with the highest idx
-            db_name = max((db[0] for db in existing_db if db[0].startswith(db_name)), key=lambda x: int(x.split('_')[-1]))
-        if db_name not in (db[0] for db in existing_db):
-            raise ValueError(f"Database {db_name} not found in the server")
+            filtered_dbs = [db for db in existing_db if re.match(rf"^{db_name}_\d+$", db)]
+            if not filtered_dbs:
+                raise ValueError(f"Database starting with {db_name} not found in the server")
+            db_name = max(filtered_dbs, key=lambda x: int(x.split('_')[-1]))
 
+        if db_name not in existing_db:
+            raise ValueError(f"Database {db_name} not found in the server")
         self.client.database = db_name
+
         for report_type in self.report_types:
             table_name = report_type.table_name()
             expected_schema = report_type.get_db_types()  # { column_name: type_str, ... }
@@ -139,6 +170,7 @@ if __name__ == '__main__':
     from uuid import uuid4
 
     ind_name, comp_name = str(uuid4()), str(uuid4())
+    ind_name, comp_name = '4327f758-8aa1-410f-aa4a-596c03f702b9', '37017488-cdb1-4a0e-bd1b-8605f90d1b6c'
 
     ind_reports = IndividualReports(
         step=1,
@@ -173,7 +205,7 @@ if __name__ == '__main__':
     with open('../db_info.json', 'r') as f:
         db_info = DatabaseInfo(**load(f))
     sim_db = SimDatabase(db_info, [IndividualReports, CompanyReports])
-    sim_db.load_database('testing_1')
+    sim_db.load_database('testing')
 
     sim_db.insert_reports([ind_reports])
     sim_db.insert_reports([comp_reports])
