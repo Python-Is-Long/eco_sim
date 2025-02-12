@@ -9,6 +9,7 @@ from tqdm import tqdm
 import json
 
 from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
+from utils.simulationObjects import IndividualReports, CompanyReports
 from utils.database import DatabaseInfo, SimDatabase
 
 
@@ -20,7 +21,9 @@ class Economy:
         self.companies = self._create_companies(self.config.NUM_COMPANY)
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
-        self.db = SimDatabase('ECOSIM', db_info)
+        self.report_types = [IndividualReports, CompanyReports]
+        self.db = SimDatabase(db_info, self.report_types)
+        self.db.create_database('ECOSIM')
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)

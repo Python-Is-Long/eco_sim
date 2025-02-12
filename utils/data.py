@@ -59,6 +59,53 @@ def to_db_types(tp: Any) -> str:
     raise ValueError(f"Unsupported type: {tp}")
 
 
+def convert_value(value, target_type):
+    origin = get_origin(target_type)
+    args = get_args(target_type)
+
+    if origin is not None:
+        # Handle generic types
+        if not isinstance(value, origin):
+            try:
+                value = origin(value)
+            except (TypeError, ValueError) as e:
+                raise TypeError(f"Could not convert {value} to {origin}") from e
+
+        if origin is list:
+            if len(args) != 1:
+                return value  # Unable to handle multiple or no args
+            element_type = args[0]
+            return [convert_value(e, element_type) for e in value]
+        elif origin is dict:
+            if len(args) != 2:
+                return value
+            key_type, val_type = args
+            return {
+                convert_value(k, key_type): convert_value(v, val_type)
+                for k, v in value.items()
+            }
+        elif origin is tuple:
+            if Ellipsis in args:
+                element_type = args[0]
+                return tuple(convert_value(e, element_type) for e in value)
+            else:
+                if len(value) != len(args):
+                    raise ValueError(f"Expected {len(args)} elements, got {len(value)}")
+                return tuple(convert_value(e, t) for e, t in zip(value, args))
+        elif origin is set:
+            element_type = args[0]
+            return {convert_value(e, element_type) for e in value}
+        else:
+            return value
+    else:
+        if isinstance(value, target_type):
+            return value
+        try:
+            return target_type(value)
+        except (TypeError, ValueError) as e:
+            raise TypeError(f"Could not convert {value} to {target_type}") from e
+
+
 if __name__ == "__main__":
     # Basic types
     print("Basic types:")

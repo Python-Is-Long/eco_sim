@@ -1,24 +1,66 @@
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import List, Optional, Union, Iterable, Callable, Set, Any
 from typing import TYPE_CHECKING
-from uuid import UUID
-from abc import ABC, abstractmethod
 
 import numpy as np
 
+from utils.data import to_db_types, convert_value
 from utils.genericObjects import NamedObject, FundsObject
 
 if TYPE_CHECKING:
     from sim import Economy
 
 @dataclass
-class Reports(ABC):
+class Reports:
+    """A report dataclass to store data into a database.
+    This dataclass will force all attributes to be converted to the correct type.
+
+    Attributes:
+        step (int): The current step of the simulation.
+        name (str): The name of the object.
+    """
+    step: int
+    name: str
+
     @staticmethod
-    @abstractmethod
-    def table_name():
+    def table_name() -> str:
         """Returns what table should this report be stored in the database."""
+        # Override this method in a subclass to specify the table name for that report
         pass
+
+    @staticmethod
+    def db_type_overrides() -> dict[str, str]:
+        """Returns the type overrides for attributes to store the report."""
+        # Override this method in a subclass to force a column in the database to be a specific type
+        return {'step': 'UInt32', 'name': 'UUID'}
+
+    def __post_init__(self):
+        """Force conversion of all attributes to the correct type."""
+        for field in fields(self): # type: ignore
+            current_value = getattr(self, field.name)
+            try:
+                converted_value = convert_value(current_value, field.type)
+            except Exception as e:
+                raise TypeError(
+                    f"Failed to convert field '{field.name}' from {type(current_value)} to {field.type}: {e}"
+                ) from e
+            setattr(self, field.name, converted_value)
+
+    @classmethod
+    def get_db_types(cls) -> dict[str, str]:
+        """Returns the database types for each attribute in the report."""
+        annotations = {}
+        for c in cls.mro()[::-1]:
+            try:
+                annotations.update(c.__annotations__)
+            except AttributeError:
+                # object, at least, has no __annotations__ attribute.
+                pass
+        db_types = {attr: to_db_types(anno) for attr, anno in annotations.items()}
+        db_types.update(cls.db_type_overrides())
+        return db_types
+
 
 class Config:
     """Default Settings"""
@@ -147,8 +189,6 @@ class ProductGroup(tuple):
 @dataclass
 class IndividualReports(Reports):
     # Make sure each attribute has valid type annotation
-    step: int
-    name: str
     funds: float
     income: float
     expenses: float
@@ -160,6 +200,7 @@ class IndividualReports(Reports):
     @staticmethod
     def table_name():
         return 'individual'
+
 
 
 class Individual(FundsObject, NamedObject):
@@ -255,8 +296,6 @@ class Individual(FundsObject, NamedObject):
 @dataclass
 class CompanyReports(Reports):
     # Make sure each attribute has valid type annotation
-    step: int
-    name: str
     owner: str
     funds: np.float64
     employees: list[str]
