@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 import re
 
 import clickhouse_connect
@@ -135,8 +135,15 @@ class SimDatabase:
             self.tables[report_type] = list(expected_schema.keys())
         self._db_loaded = True
 
-    def insert_reports(self, reports: list[Reports]):
+    def insert_reports(self, reports: Reports | Sequence[Reports]):
+        """Insert reports into the database.
+        If inserting multiple reports, they must all be of the same type.
+        """
         self._check_loaded_db()
+
+        if isinstance(reports, Reports):
+            reports = [reports]
+
         # Check that all reports are of the same type
         for rp_type, col in self.tables.items():
             if all(isinstance(r, rp_type) for r in reports):
