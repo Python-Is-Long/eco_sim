@@ -1,7 +1,7 @@
 import os
 import pickle
 import random
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,7 +14,7 @@ from utils.database import DatabaseInfo, SimDatabase
 
 
 class Economy:
-    def __init__(self, db_info: DatabaseInfo, config: Config = Config()):
+    def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config()):
         self.config = config
 
         self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
@@ -22,8 +22,11 @@ class Economy:
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
         self.report_types = [IndividualReports, CompanyReports]
-        self.db = SimDatabase(db_info, self.report_types)
-        self.db.create_database('ECOSIM')
+
+        self.db_connection = True if db_info else False
+        if db_info:
+            self.db = SimDatabase(db_info, self.report_types)
+            self.db.create_database('ECOSIM')
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
@@ -123,8 +126,9 @@ class Economy:
             self.adjust_workforce(company)
 
         # Insert reports into database
-        self.db.insert_reports([i.report() for i in self.individuals])
-        self.db.insert_reports([c.report() for c in self.companies])
+        if self.db_connection:
+            self.db.insert_reports([i.report() for i in self.individuals])
+            self.db.insert_reports([c.report() for c in self.companies])
 
         # Collect statistics
         self.stats.collect_statistics(self)
@@ -261,10 +265,15 @@ def run_simulation(
     else:
         with open('db_info.json', 'r') as f:
             db_info = json.load(f)
-        economy = Economy(DatabaseInfo(**db_info), config=Config(
+        config = Config(
             NUM_INDIVIDUAL=num_individuals,
             NUM_COMPANY=num_companies,
-        ))
+        )
+        # Note: Economy with database connection will not be pickleable
+        economy = Economy(
+            # DatabaseInfo(**db_info),
+            config=config,
+        )
     for _ in tqdm(range(num_steps - economy.stats.step), desc="Simulating economy"):
         economy.simulate_step()
         # economy.all_companies[0].print_statistics()
