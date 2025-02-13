@@ -202,15 +202,22 @@ class IndividualReports(Reports):
         return 'individual'
 
 
-
 class Individual(FundsObject, NamedObject):
-    def __init__(self, sim:'Economy', talent: float, initial_funds: float, skills: Set[int], risk_tolerance: float, configuration: Config = Config()):
+    def __init__(
+        self,
+        eco: 'Economy',
+        talent: float,
+        initial_funds: float,
+        skills: Set[int],
+        risk_tolerance: float,
+        configuration: Config = Config()
+    ):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
             funds_precision=configuration.FUNDS_PRECISION
         )
-        self.sim = sim
+        self.eco = eco
 
         self.talent = talent
         self.unemployed_state = 0
@@ -261,14 +268,25 @@ class Individual(FundsObject, NamedObject):
         chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
         return chosen_product
 
-    def find_job(self, companies: List['Company'], unemployed_state):
-        # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
-        ego_value = [1, 0.95, 0.9, 0.85, 0.8, 0.75]
-        # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
+    def find_opportunities(self):
+        # Find jobs if the individual is not employed
         if self.employer is None:
-            for company in companies:
-                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[unemployed_state]):
-                    break
+            # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
+            ego_value = [1, 0.95, 0.9, 0.85, 0.8, 0.75]
+            # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
+            for company in self.eco.companies:
+                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[self.unemployed_state]):
+                    return
+            if self.unemployed_state < len(ego_value) - 1:
+                self.unemployed_state += 1
+
+        # Start new company
+        be_entrepreneur = self.choose_niche(niches=self.config.POSSIBLE_MARKETS)
+        # TODO: Instead of random chance of starting a new company, consider the current market demands
+        if self.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < self.eco.market_potential and be_entrepreneur:
+            initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
+            # Add this new company to a queue to be created by the main thread
+            self.eco.creating_companies.append(CompanyCreation(owner=self, initial_funds=initial_funds))
 
     def estimate_runout(self) -> Optional[int]:
         # Estimate how many time steps until the individual runs out of funds
@@ -279,9 +297,15 @@ class Individual(FundsObject, NamedObject):
         # Evaluation based on how much funds the individual has and the product that they are purchasing
         pass
 
+    def purchase_product(self):
+        target_product = self.decide_purchase(self.eco.get_all_products())
+        if target_product is not None:
+            self.make_purchase(self.eco.companies, target_product)
+            self.expenses = target_product.price
+
     def report(self):
         return IndividualReports(
-            step=self.sim.stats.step,
+            step=self.eco.stats.step,
             name=self.name,
             funds=self.funds,
             income=self.income,
@@ -292,6 +316,11 @@ class Individual(FundsObject, NamedObject):
             owning_company=[c.name for c in self.owning_company],
         )
 
+
+@dataclass
+class CompanyCreation:
+    owner: Individual
+    initial_funds: Any
 
 @dataclass
 class CompanyReports(Reports):
@@ -312,13 +341,19 @@ class CompanyReports(Reports):
 
 
 class Company(FundsObject, NamedObject):
-    def __init__(self, sim:'Economy', owner: Individual, initial_funds: float = 0, configuration: Config = Config()):
+    def __init__(
+            self,
+            eco: 'Economy',
+            owner: Individual,
+            initial_funds: float = 0,
+            configuration: Config = Config()
+    ):
         self.config = configuration
         super().__init__(
             starting_funds=initial_funds,
             funds_precision=self.config.FUNDS_PRECISION
         )
-        self.sim = sim
+        self.eco = eco
 
         self.set_funds(initial_funds)
         self.owner = owner
@@ -367,15 +402,16 @@ class Company(FundsObject, NamedObject):
             base_quality_raw_material = np.median(product.quality for product in self.raw_materials)
         return base_quality_employee + base_quality_raw_material
 
-    def estimate_sales(self, population: int, company_count: int) -> float:
+    @staticmethod
+    def estimate_sales(population: int, company_count: int) -> float:
         # TODO: Smarter estimate sales
         return population / company_count
 
     def update_product_attributes(self, population: int, company_count: int):
         # Update product quality and price
-        self.product.quality = max(1, self.calculate_product_quality())  # Ensure quality >= 1
-        self.product.price = (max(1, self.costs * (1 + self.profit_margin)) /
-                              self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
+        self.product.quality = max(1, self.calculate_product_quality())  # type: ignore
+        self.product.price = (max(1, self.costs * (1 + self.profit_margin)) /  # type: ignore
+                              self.estimate_sales(population=population, company_count=company_count))
 
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
         #TODO: allow company to grow indefinitely
@@ -394,9 +430,12 @@ class Company(FundsObject, NamedObject):
             employee.salary = 0.0
 
     # fix zero raw_material issue
-    def find_raw_material(self, products: List[Product]):
+    def find_raw_material(self, products: Iterable[Product]):
         # Get all products that does not have this company's product as a child material
-        potential_materials = [p for p in products if self.product not in p.get_materials_recursive()]
+        potential_materials = [p for p in products if self.product not in p.get_materials_recursive() and p is not self.product]
+
+        if not potential_materials:
+            return
 
         if self.product.quality == 1 or not self.raw_materials:
             self.raw_materials.append(random.choice(potential_materials))
@@ -414,20 +453,54 @@ class Company(FundsObject, NamedObject):
             # Reduce product cost before firing employees
             self.raw_materials.remove(sorted(list(self.raw_materials), key=lambda x: x.price, reverse=True)[0])
 
-            if self.funds < self.costs:
-                # Fire all employees
-                for employee in self.employees:
-                    self.fire_employee(employee)
-                # The owner runs with leftover company funds
-                self.transfer_funds_to(self.owner, self.funds)
-                self.owner.owning_company.remove(self)
-                self.bankruptcy = True
-                return True
-            return False
+        return self.funds < self.costs
+
+    def declare_bankruptcy(self):
+        # Fire all employees
+        for employee in self.employees:
+            self.fire_employee(employee)
+        # The owner runs with leftover company funds
+        self.transfer_funds_to(self.owner, self.funds)
+        self.bankruptcy = True
+        self.eco.stats.num_bankruptcies += 1
+
+    def update_product(self):
+        # Update company product prices and quality and reset revenue
+        self.remove_raw_material()  # see if remove raw_material at this step
+        self.update_product_attributes(population=len(self.eco.individuals), company_count=len(self.eco.companies))
+        self.revenue = 0
+
+        # see if able to find a raw_material at this step
+        self.find_raw_material(self.eco.get_all_products())
+
+    def do_finance(self):
+        # Pay dividends from profit to owner
+        self.transfer_funds_to(self.owner, self.dividend)
+        # Check for bankruptcy
+        if self.check_bankruptcy():
+            self.declare_bankruptcy()
+            # Add this company to a queue to be removed by the main thread
+            self.eco.removing_companies.append(self)
+
+        # Pays employees salary
+        [e.transfer_funds_from(self, e.salary) for e in self.employees]
+
+    def adjust_workforce(self, unemployed: list[Individual]):
+        if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
+            # Hire new employees
+            if unemployed:
+                new_employee = max(unemployed, key=lambda x: x.talent)
+                self.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
+        elif self.revenue < self.costs:
+            # Fire employees
+            if self.employees:
+                employee_to_fire = random.choice(self.employees)
+                self.fire_employee(employee_to_fire)
+            # TODO: add a bankruptcy index every time when there's no worker to fire
 
     def report(self):
         return CompanyReports(
-            step=self.sim.stats.step,
+            step=self.eco.stats.step,
             name=self.name,
             owner=self.owner.name,
             funds=self.funds,

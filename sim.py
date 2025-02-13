@@ -8,20 +8,26 @@ import numpy as np
 from tqdm import tqdm
 import json
 
-from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
-from utils.simulationObjects import IndividualReports, CompanyReports
+from utils.simulationObjects import Config, Individual, Company, ProductGroup
+from utils.simulationObjects import IndividualReports, CompanyReports, CompanyCreation
 from utils.database import DatabaseInfo, SimDatabase
 
 
 class Economy:
+    creating_companies: List[CompanyCreation]
+    removing_companies: List[Company]
+
     def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config()):
         self.config = config
 
         self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
         self.companies = self._create_companies(self.config.NUM_COMPANY)
+        self.market_potential = 0
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
         self.report_types = [IndividualReports, CompanyReports]
+        self.creating_companies = []
+        self.removing_companies = []
 
         self.db_connection = True if db_info else False
         if db_info:
@@ -67,80 +73,55 @@ class Economy:
 
     def simulate_step(self):
         self.stats.step += 1
-        # Update company product prices and quality and reset revenue
+        # Collect statistics
+        self.collect_statistics()
+
+        # Reset company revenue, update company product prices and quality and find new materials
         for company in self.companies:
-            company.remove_raw_material() # see if remove raw_material at this step
-            company.update_product_attributes(population=len(self.individuals), company_count=len(self.companies))
-            company.revenue = 0
-
-        # see if able to find a raw_material at this step
-        if len(self.companies) > 1:
-            for company in self.companies:
-                all_raw_materials = [c.product for c in self.companies if c is not company]
-                company.find_raw_material(all_raw_materials)
-
-        all_products = self.get_all_products()
+            company.update_product()
 
         # Individuals spend money
         for individual in self.individuals:
-            chosen_product = individual.decide_purchase(all_products)
-            if chosen_product:
-                individual.make_purchase(self.companies, chosen_product)
-                individual.expenses = chosen_product.price
-                # print(f'{individual.name} is buying product {chosen_product.name} from company {chosen_product.company.name} for {chosen_product.price}')
+            individual.purchase_product()
 
+        # Company checks for bankruptcy and pays dividends then pays salaries
         for company in self.companies:
-            # Pay dividends from profit to owner
-            company.transfer_funds_to(company.owner, company.dividend)
+            company.do_finance()
+        self.handle_company_removal()
 
-            # Check for bankruptcy
-            if company.check_bankruptcy():
-                self.companies.remove(company)
-                self.stats.num_bankruptcies += 1
-                continue
-            # Pays employees salary
-            for employee in company.employees:
-                company.transfer_funds_to(employee, employee.salary)
-            if company.funds < 0:
-                print('negative funds:', company.funds)
-
-        # Individuals find jobs
+        # Individuals find jobs or create new company
+        self.update_market_potential()
         for individual in self.individuals:
-            if individual.employer is None:
-                individual.find_job(self.companies, individual.unemployed_state)
-
-            if individual.employer is None and individual.unemployed_state <5:
-                individual.unemployed_state += 1
-
-        # TODO: Handles case where len(self.companies) is 0
-        market_potential = np.log10(len(self.individuals)) / len(self.companies)
-        # Start new companies
-        for individual in self.individuals:
-            be_entrepreneur = Individual.choose_niche(individual, niches=self.config.POSSIBLE_MARKETS)
-            # TODO: Instead of random chance of starting a new company, consider the current market demands
-            if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < market_potential and be_entrepreneur:
-                self.start_new_company(individual)
+            individual.find_opportunities()
+        self.handle_company_creation()
 
         # Adjust workforce for companies
         for company in self.companies:
             self.adjust_workforce(company)
 
-        # Insert reports into database
+        # Insert reports into database if there is a connection
+        self.reports()
+
+    def reports(self):
         if self.db_connection:
             self.db.insert_reports([i.report() for i in self.individuals])
             self.db.insert_reports([c.report() for c in self.companies])
 
-        # Collect statistics
-        self.stats.collect_statistics(self)
-
-    def start_new_company(self, individual: Individual):
-        if individual.funds > self.config.MIN_WEALTH_FOR_STARTUP:
-            initial_funds = individual.funds * self.config.STARTUP_COST_FACTOR
-            new_company = Company(self, individual)
-            individual.transfer_funds_to(new_company, initial_funds)
+    def handle_company_creation(self):
+        for c in self.creating_companies:
+            new_company = Company(self, c.owner)
+            c.owner.transfer_funds_to(new_company, c.initial_funds)
             self.companies.append(new_company)
-            self.all_companies.append(new_company)
-            self.stats.num_new_companies += 1  # Increment new company counter
+            self.stats.num_new_companies += 1
+        self.creating_companies = []
+
+    def handle_company_removal(self):
+        [self.companies.remove(c) for c in self.removing_companies]
+        self.removing_companies = []
+
+    def update_market_potential(self):
+        # TODO: Handles case where len(self.companies) is 0
+        self.market_potential = np.log10(len(self.individuals)) / len(self.companies)
 
     def adjust_workforce(self, company: Company):
         if company.revenue > company.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
@@ -164,6 +145,38 @@ class Economy:
     def load_state(filename: str) -> 'Economy':
         with open(filename, 'rb') as f:
             return pickle.load(f)
+
+    def collect_statistics(self):
+        individual_wealths = [ind.funds for ind in self.individuals]
+        company_wealths = [comp.funds for comp in self.companies]
+        employed = len([ind for ind in self.individuals if ind.employer])
+
+        self.stats.individual_wealth_gini.append(self.stats.calculate_gini(individual_wealths))
+        self.stats.avg_individual_wealth.append(np.mean(individual_wealths))
+        self.stats.sum_individual_wealth.append(np.sum(individual_wealths))
+        self.stats.sum_company_wealth.append(np.sum(company_wealths))
+        self.stats.num_companies.append(len(self.companies))
+        self.stats.unemployment_rate.append(1 - employed / len(self.individuals))
+        self.stats.bankruptcies_over_time.append(self.stats.num_bankruptcies)  # Track bankruptcies
+        self.stats.new_companies_over_time.append(self.stats.num_new_companies)  # Track new companies
+
+        self.stats.total_money = round(self.stats.sum_individual_wealth[-1] + self.stats.sum_company_wealth[-1])
+
+        to_low_precision = lambda x: float(np.float32(x))
+        self.stats.all_company_funds.append([to_low_precision(c.funds) for c in self.companies])
+        self.stats.all_individual_funds.append([to_low_precision(i.funds) for i in self.individuals])
+        self.stats.all_product_prices.append([to_low_precision(c.product.price) for c in self.companies])
+        self.stats.all_salaries.append([to_low_precision(e.salary) for e in self.individuals if e.employer])
+        self.stats.all_employee_counts.append([len(c.employees) for c in self.companies])
+
+        if self.companies:
+            self.stats.avg_product_quality.append(np.mean([c.product.quality for c in self.companies]))
+            self.stats.avg_product_price.append(np.mean([c.product.price for c in self.companies]))
+            self.stats.avg_company_raw_materials.append(np.mean([len(c.raw_materials) for c in self.companies]))
+            self.stats.avg_company_employees.append(np.mean([len(c.employees) for c in self.companies]))
+        else:
+            self.stats.avg_product_quality.append(0)
+            self.stats.avg_product_price.append(0)
 
 
 class EconomyStats:
@@ -206,7 +219,8 @@ class EconomyStats:
         return {attr: value for attr, value in self.__dict__.items() if
                 isinstance(value, list) and attr not in self.dict_histogram_attributes}
 
-    def calculate_gini(self, wealths: List[float]) -> float:
+    @staticmethod
+    def calculate_gini(wealths: List[float]) -> float:
         sorted_wealths = sorted(wealths)
         n = len(sorted_wealths)
         if n == 0:
@@ -217,38 +231,6 @@ class EconomyStats:
     def save_stats(self, file):
         with open(file, 'wb') as f:
             pickle.dump(self, f)
-
-    def collect_statistics(self, economy: Economy):
-        individual_wealths = [ind.funds for ind in economy.individuals]
-        company_wealths = [comp.funds for comp in economy.companies]
-        employed = len([ind for ind in economy.individuals if ind.employer])
-
-        self.individual_wealth_gini.append(self.calculate_gini(individual_wealths))
-        self.avg_individual_wealth.append(np.mean(individual_wealths))
-        self.sum_individual_wealth.append(np.sum(individual_wealths))
-        self.sum_company_wealth.append(np.sum(company_wealths))
-        self.num_companies.append(len(economy.companies))
-        self.unemployment_rate.append(1 - employed / len(economy.individuals))
-        self.bankruptcies_over_time.append(self.num_bankruptcies)  # Track bankruptcies
-        self.new_companies_over_time.append(self.num_new_companies)  # Track new companies
-
-        self.total_money = round(self.sum_individual_wealth[-1] + self.sum_company_wealth[-1])
-
-        to_low_precision = lambda x: float(np.float32(x))
-        self.all_company_funds.append([to_low_precision(c.funds) for c in economy.companies])
-        self.all_individual_funds.append([to_low_precision(i.funds) for i in economy.individuals])
-        self.all_product_prices.append([to_low_precision(c.product.price) for c in economy.companies])
-        self.all_salaries.append([to_low_precision(e.salary) for e in economy.individuals if e.employer])
-        self.all_employee_counts.append([len(c.employees) for c in economy.companies])
-
-        if economy.companies:
-            self.avg_product_quality.append(np.mean([c.product.quality for c in economy.companies]))
-            self.avg_product_price.append(np.mean([c.product.price for c in economy.companies]))
-            self.avg_company_raw_materials.append(np.mean([len(c.raw_materials) for c in economy.companies]))
-            self.avg_company_employees.append(np.mean([len(c.employees) for c in economy.companies]))
-        else:
-            self.avg_product_quality.append(0)
-            self.avg_product_price.append(0)
 
 
 def run_simulation(
