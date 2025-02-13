@@ -27,7 +27,7 @@ class Reports:
     def table_name() -> str:
         """Returns what table should this report be stored in the database."""
         # Override this method in a subclass to specify the table name for that report
-        pass
+        raise NotImplementedError("table_name method must be overridden in a subclass")
 
     @staticmethod
     def db_type_overrides() -> dict[str, str]:
@@ -268,7 +268,8 @@ class Individual(FundsObject, NamedObject):
         chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
         return chosen_product
 
-    def find_opportunities(self):
+    # Stage method
+    def find_opportunities(self) -> bool:
         # Find jobs if the individual is not employed
         if self.employer is None:
             # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
@@ -276,7 +277,7 @@ class Individual(FundsObject, NamedObject):
             # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
             for company in self.eco.companies:
                 if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[self.unemployed_state]):
-                    return
+                    return True
             if self.unemployed_state < len(ego_value) - 1:
                 self.unemployed_state += 1
 
@@ -287,6 +288,7 @@ class Individual(FundsObject, NamedObject):
             initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
             # Add this new company to a queue to be created by the main thread
             self.eco.creating_companies.append(CompanyCreation(owner=self, initial_funds=initial_funds))
+        return True
 
     def estimate_runout(self) -> Optional[int]:
         # Estimate how many time steps until the individual runs out of funds
@@ -297,11 +299,13 @@ class Individual(FundsObject, NamedObject):
         # Evaluation based on how much funds the individual has and the product that they are purchasing
         pass
 
-    def purchase_product(self):
+    # Stage method
+    def purchase_product(self) -> bool:
         target_product = self.decide_purchase(self.eco.get_all_products())
         if target_product is not None:
             self.make_purchase(self.eco.companies, target_product)
             self.expenses = target_product.price
+        return True
 
     def report(self):
         return IndividualReports(
@@ -464,7 +468,8 @@ class Company(FundsObject, NamedObject):
         self.bankruptcy = True
         self.eco.stats.num_bankruptcies += 1
 
-    def update_product(self):
+    # Stage method
+    def update_product(self) -> bool:
         # Update company product prices and quality and reset revenue
         self.remove_raw_material()  # see if remove raw_material at this step
         self.update_product_attributes(population=len(self.eco.individuals), company_count=len(self.eco.companies))
@@ -472,8 +477,10 @@ class Company(FundsObject, NamedObject):
 
         # see if able to find a raw_material at this step
         self.find_raw_material(self.eco.get_all_products())
+        return True
 
-    def do_finance(self):
+    # Stage method
+    def do_finance(self) -> bool:
         # Pay dividends from profit to owner
         self.transfer_funds_to(self.owner, self.dividend)
         # Check for bankruptcy
@@ -481,13 +488,17 @@ class Company(FundsObject, NamedObject):
             self.declare_bankruptcy()
             # Add this company to a queue to be removed by the main thread
             self.eco.removing_companies.append(self)
+            return False
 
         # Pays employees salary
         [e.transfer_funds_from(self, e.salary) for e in self.employees]
+        return True
 
-    def adjust_workforce(self, unemployed: list[Individual]):
+    # Stage method
+    def adjust_workforce(self) -> bool:
         if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
             # Hire new employees
+            unemployed = self.eco.get_all_unemployed()
             if unemployed:
                 new_employee = max(unemployed, key=lambda x: x.talent)
                 self.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
@@ -497,6 +508,7 @@ class Company(FundsObject, NamedObject):
                 employee_to_fire = random.choice(self.employees)
                 self.fire_employee(employee_to_fire)
             # TODO: add a bankruptcy index every time when there's no worker to fire
+        return True
 
     def report(self):
         return CompanyReports(

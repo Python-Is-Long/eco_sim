@@ -1,7 +1,9 @@
 import os
 import pickle
 import random
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Sequence, Callable
+from threading import Thread, Event
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,10 +14,47 @@ from utils.simulationObjects import Config, Individual, Company, ProductGroup
 from utils.simulationObjects import IndividualReports, CompanyReports, CompanyCreation
 from utils.database import DatabaseInfo, SimDatabase
 
+step_count = {}
+
+def staged_stepping(
+    agent,
+    stages: Sequence[Callable[..., bool] | Sequence[Callable[..., bool]] | None],
+    start_stage_event: Event,
+    end_stage_event: Event
+):
+    global step_count
+    step_count[agent] = 0
+    current_step = 0
+    still_live = True
+    while still_live:
+        current_step += 1
+        for i, stage in enumerate(stages):
+            # Wait for the start of the stage
+            start_stage_event.wait()
+            # Clear the end stage event immediately for the main thread will wait before this stage completes
+            end_stage_event.clear()
+            step_count[agent] = current_step + i / 10
+            # Execute the stage
+            if stage is not None:
+                if callable(stage):
+                    still_live = stage(agent)
+                else:
+                    for s in stage:
+                        still_live = s(agent)
+                        if not still_live:
+                            break
+            # Notify the main thread that the stage is complete
+            end_stage_event.set()
+            # Terminates the thread if the agent is no longer alive
+            if not still_live:
+                break
+
 
 class Economy:
     creating_companies: List[CompanyCreation]
     removing_companies: List[Company]
+    individual_stages: Sequence[Callable[..., bool] | None]
+    company_stages: Sequence[Callable[..., bool] | None]
 
     def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config()):
         self.config = config
@@ -28,11 +67,43 @@ class Economy:
         self.report_types = [IndividualReports, CompanyReports]
         self.creating_companies = []
         self.removing_companies = []
+        self.start_stage_event = Event()
+        self.end_stage_events = []
+        self.threads = []
 
         self.db_connection = True if db_info else False
         if db_info:
             self.db = SimDatabase(db_info, self.report_types)
             self.db.create_database('ECOSIM')
+
+        # Economy methods that runs before each stage
+        self.before_stage = [
+            [self.collect_statistics, self.reports],
+            None,
+            None,
+            self.handle_company_removal,
+            self.handle_company_creation,
+        ]
+        self.individual_stages = [
+            None,
+            Individual.purchase_product,  # Individuals spend money
+            None,
+            Individual.find_opportunities,  # Individuals find jobs or create new company
+            None,
+        ]
+        self.company_stages = [
+            Company.update_product, # Update company product prices and quality and find new materials
+            None,
+            Company.do_finance,  # Company checks for bankruptcy and pays dividends then pays salaries
+            None,
+            Company.adjust_workforce,  # Adjust workforce for companies
+        ]
+
+        assert len(self.before_stage) == len(self.individual_stages) == len(self.company_stages), \
+            'All stages must be the same length!'
+
+        [self.create_thread(i) for i in self.individuals]
+        [self.create_thread(c) for c in self.companies]
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
@@ -65,18 +136,31 @@ class Economy:
                         available_workers.remove(employee)
 
             companies.append(company)
-
         return companies
+
+    def create_thread(self, agent: Individual | Company):
+        end_stage_event = Event()
+        self.end_stage_events.append(end_stage_event)
+        stages = self.company_stages if isinstance(agent, Company) else self.individual_stages
+        thread = Thread(
+            target=staged_stepping,
+            args=(agent, stages, self.start_stage_event, end_stage_event),
+            daemon=True,
+        )
+        self.threads.append(thread)
+        thread.start()
 
     def get_all_products(self) -> ProductGroup:
         return ProductGroup([company.product for company in self.companies])
+
+    def get_all_unemployed(self):
+        return [i for i in self.individuals if i.employer is None]
 
     def simulate_step(self):
         self.stats.step += 1
         # Collect statistics
         self.collect_statistics()
 
-        # Reset company revenue, update company product prices and quality and find new materials
         for company in self.companies:
             company.update_product()
 
@@ -97,10 +181,29 @@ class Economy:
 
         # Adjust workforce for companies
         for company in self.companies:
-            self.adjust_workforce(company)
+            company.adjust_workforce()
 
         # Insert reports into database if there is a connection
         self.reports()
+
+    def simulate_step_threaded(self):
+        for e in self.before_stage:
+            # Execute the code before a stage starts
+            if e is not None:
+                if callable(e):
+                    e()
+                else:
+                    [i() for i in e if i]
+            # Start the stage
+            self.start_stage_event.set()
+            time.sleep(0.001)
+            self.start_stage_event.clear()
+            [e.wait() for e in self.end_stage_events]
+
+            # Check if all threads are on the same step
+            if len(set(step_count.values())) == 1:
+                print("Threads are not on the same step: {step_count}")
+                print(step_count)
 
     def reports(self):
         if self.db_connection:
@@ -122,20 +225,6 @@ class Economy:
     def update_market_potential(self):
         # TODO: Handles case where len(self.companies) is 0
         self.market_potential = np.log10(len(self.individuals)) / len(self.companies)
-
-    def adjust_workforce(self, company: Company):
-        if company.revenue > company.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
-            # Hire new employees
-            potential_employees = [ind for ind in self.individuals if ind.employer is None]
-            if potential_employees:
-                new_employee = max(potential_employees, key=lambda x: x.talent)
-                company.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
-        elif company.revenue < company.costs:
-            # Fire employees
-            if company.employees:
-                employee_to_fire = random.choice(company.employees)
-                company.fire_employee(employee_to_fire)
-            # TODO: add a bankruptcy index every time when there's no worker to fire
 
     def save_state(self, filename: str):
         with open(filename, 'wb') as f:
@@ -251,13 +340,14 @@ def run_simulation(
             NUM_INDIVIDUAL=num_individuals,
             NUM_COMPANY=num_companies,
         )
-        # Note: Economy with database connection will not be pickleable
+        # Note: Economy with database connection will not be picklable
         economy = Economy(
             # DatabaseInfo(**db_info),
             config=config,
         )
     for _ in tqdm(range(num_steps - economy.stats.step), desc="Simulating economy"):
-        economy.simulate_step()
+        # economy.simulate_step()
+        economy.simulate_step_threaded()
         # economy.all_companies[0].print_statistics()
         economy.stats.save_stats("simulation_stats.pkl")
 
