@@ -2,21 +2,34 @@ import uuid
 import numpy as np
 from typing import Union, Callable
 
+from utils.simulationUtils import AgentUpdates
 
-class NamedObject:
-    """A class that assigns a unique name to each instance."""
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+
+class Agent:
+    """A generic agent object that has a unique id for instance.
+
+    Attributes:
+        name(str): A UUID for the agent.
+    """
+    name: str
+    agent_updates: AgentUpdates
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.name = str(uuid.uuid4())
 
 
-class FundsObject:
+class FundsObject(Agent):
     """A class that manages funds for a subclass."""
     def __init__(self, starting_funds: Union[int, float]=0, funds_precision: Callable=np.float64, **kwargs):
         super().__init__(**kwargs)
 
         self._funds_precision = funds_precision
-        self.funds = funds_precision(starting_funds)
+        self.funds = starting_funds
+
+    def __setattr__(self, key, value):
+        if key == 'funds':
+            value = self._funds_precision(value)
+        super().__setattr__(key, value)
 
     @staticmethod
     def _warn_different_precision():
@@ -24,11 +37,11 @@ class FundsObject:
 
     def set_funds(self, amount: Union[int, float]):
         """Set funds to a value."""
-        self.funds = self._funds_precision(amount)
+        self.agent_updates.attr_update(self, 'funds', amount)
     
     def modify_funds(self, amount: Union[int, float]):
         """Modify funds by a value."""
-        self.funds += self._funds_precision(amount)
+        self.agent_updates.attr_update(self, 'funds', self.funds + amount)
     
     def can_afford(self, amount: Union[int, float]) -> bool:
         """Check if current funds is above a specified amount."""

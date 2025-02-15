@@ -5,61 +5,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from utils.data import to_db_types, convert_value
-from utils.genericObjects import NamedObject, FundsObject
+
+from utils.genericObjects import Agent, FundsObject
+from utils.simulationUtils import Reports, AgentUpdates
 
 if TYPE_CHECKING:
     from sim import Economy
-
-@dataclass
-class Reports:
-    """A report dataclass to store data into a database.
-    This dataclass will force all attributes to be converted to the correct type.
-
-    Attributes:
-        step (int): The current step of the simulation.
-        name (str): The name of the object.
-    """
-    step: int
-    name: str
-
-    @staticmethod
-    def table_name() -> str:
-        """Returns what table should this report be stored in the database."""
-        # Override this method in a subclass to specify the table name for that report
-        raise NotImplementedError("table_name method must be overridden in a subclass")
-
-    @staticmethod
-    def db_type_overrides() -> dict[str, str]:
-        """Returns the type overrides for attributes to store the report."""
-        # Override this method in a subclass to force a column in the database to be a specific type
-        return {'step': 'UInt32', 'name': 'UUID'}
-
-    def __post_init__(self):
-        """Force conversion of all attributes to the correct type."""
-        for field in fields(self): # type: ignore
-            current_value = getattr(self, field.name)
-            try:
-                converted_value = convert_value(current_value, field.type)
-            except Exception as e:
-                raise TypeError(
-                    f"Failed to convert field '{field.name}' from {type(current_value)} to {field.type}: {e}"
-                ) from e
-            setattr(self, field.name, converted_value)
-
-    @classmethod
-    def get_db_types(cls) -> dict[str, str]:
-        """Returns the database types for each attribute in the report."""
-        annotations = {}
-        for c in cls.mro()[::-1]:
-            try:
-                annotations.update(c.__annotations__)
-            except AttributeError:
-                # object, at least, has no __annotations__ attribute.
-                pass
-        db_types = {attr: to_db_types(anno) for attr, anno in annotations.items()}
-        db_types.update(cls.db_type_overrides())
-        return db_types
 
 
 class Config:
@@ -118,7 +69,7 @@ class NicheMarket:
         return self.demand * self.profit_margin / (self.competition + 1)  # Avoid division by zero
 
 
-class Product(NamedObject):
+class Product(Agent):
     def __init__(
         self,
         company: 'Company',
@@ -202,7 +153,7 @@ class IndividualReports(Reports):
         return 'individual'
 
 
-class Individual(FundsObject, NamedObject):
+class Individual(FundsObject):
     def __init__(
         self,
         eco: 'Economy',
@@ -237,7 +188,6 @@ class Individual(FundsObject, NamedObject):
         for c in companies:
             if product.company is c.name:
                 self.transfer_funds_to(c, product.price)
-                c.revenue += product.price
 
     def score_product(self, product: Product) -> float:
         return np.tanh((self.funds + self.income) / product.price) * product.quality if self.can_afford(
@@ -279,7 +229,7 @@ class Individual(FundsObject, NamedObject):
                 if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[self.unemployed_state]):
                     return True
             if self.unemployed_state < len(ego_value) - 1:
-                self.unemployed_state += 1
+                self.agent_updates.attr_update(self, 'unemployed_state', self.unemployed_state + 1)
 
         # Start new company
         be_entrepreneur = self.choose_niche(niches=self.config.POSSIBLE_MARKETS)
@@ -287,7 +237,7 @@ class Individual(FundsObject, NamedObject):
         if self.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < self.eco.market_potential and be_entrepreneur:
             initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
             # Add this new company to a queue to be created by the main thread
-            self.eco.creating_companies.append(CompanyCreation(owner=self, initial_funds=initial_funds))
+            self.agent_updates.add_agent(Company, owner=self, initial_funds=initial_funds)
         return True
 
     def estimate_runout(self) -> Optional[int]:
@@ -304,7 +254,7 @@ class Individual(FundsObject, NamedObject):
         target_product = self.decide_purchase(self.eco.get_all_products())
         if target_product is not None:
             self.make_purchase(self.eco.companies, target_product)
-            self.expenses = target_product.price
+            self.agent_updates.attr_update(self, 'expenses', target_product.price)
         return True
 
     def report(self):
@@ -320,11 +270,6 @@ class Individual(FundsObject, NamedObject):
             owning_company=[c.name for c in self.owning_company],
         )
 
-
-@dataclass
-class CompanyCreation:
-    owner: Individual
-    initial_funds: Any
 
 @dataclass
 class CompanyReports(Reports):
@@ -344,7 +289,8 @@ class CompanyReports(Reports):
         return 'company'
 
 
-class Company(FundsObject, NamedObject):
+class Company(FundsObject):
+    owner: Individual
     def __init__(
             self,
             eco: 'Economy',
@@ -360,8 +306,7 @@ class Company(FundsObject, NamedObject):
         self.eco = eco
 
         self.set_funds(initial_funds)
-        self.owner = owner
-        owner.owning_company.append(self)
+        self.agent_updates.agent_list_update(owner, 'owning_company', 'append', self)
 
         self.employees: List[Individual] = []
         self.product = Product(self)
@@ -370,6 +315,11 @@ class Company(FundsObject, NamedObject):
         self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
         self.profit_margin = 0.2  # (1 + profit margin) * price * sales = revenue  TODO: smart margin
+
+    def __setattr__(self, key, value):
+        if key == "funds" and value > self.funds:
+            self.agent_updates.attr_update(self,'revenue', value - self.funds)
+        super().__setattr__(key, value)
 
     @property
     def total_salary(self):
@@ -420,18 +370,18 @@ class Company(FundsObject, NamedObject):
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
         #TODO: allow company to grow indefinitely
         if self.funds >= salary and len(self.employees) < self.max_employees:
-            candidate.employer = self
-            candidate.salary = salary
-            self.employees.append(candidate)
-            candidate.unemployed_state=0
+            self.agent_updates.attr_update(candidate, 'employer', self)
+            self.agent_updates.attr_update(candidate, 'salary', salary)
+            self.agent_updates.attr_update(candidate, 'unemployed_state', 0)
+            self.agent_updates.agent_list_update(self, 'employees', 'append', candidate)
             return True
         return False
 
     def fire_employee(self, employee: Individual):
         if employee in self.employees:
             self.employees.remove(employee)
-            employee.employer = None
-            employee.salary = 0.0
+            self.agent_updates.attr_update(employee, 'employer', None)
+            self.agent_updates.attr_update(employee, 'salary', 0.0)
 
     # fix zero raw_material issue
     def find_raw_material(self, products: Iterable[Product]):
@@ -442,14 +392,14 @@ class Company(FundsObject, NamedObject):
             return
 
         if self.product.quality == 1 or not self.raw_materials:
-            self.raw_materials.append(random.choice(potential_materials))
+            self.agent_updates.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
         if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON) * 10:
-            self.raw_materials.append(random.choice(potential_materials))
+            self.agent_updates.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
         if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON) / 10:
-            self.raw_materials.remove(random.choice(self.raw_materials))
+            self.agent_updates.agent_list_update(self, 'raw_materials', 'remove', random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
         # TODO: if a company has no worker for over x step, bankrupt
@@ -473,7 +423,7 @@ class Company(FundsObject, NamedObject):
         # Update company product prices and quality and reset revenue
         self.remove_raw_material()  # see if remove raw_material at this step
         self.update_product_attributes(population=len(self.eco.individuals), company_count=len(self.eco.companies))
-        self.revenue = 0
+        self.agent_updates.attr_update(self, 'revenue', 0)
 
         # see if able to find a raw_material at this step
         self.find_raw_material(self.eco.get_all_products())
@@ -487,7 +437,7 @@ class Company(FundsObject, NamedObject):
         if self.check_bankruptcy():
             self.declare_bankruptcy()
             # Add this company to a queue to be removed by the main thread
-            self.eco.removing_companies.append(self)
+            self.agent_updates.remove_agent(self)
             return False
 
         # Pays employees salary

@@ -11,7 +11,7 @@ from tqdm import tqdm
 import json
 
 from utils.simulationObjects import Config, Individual, Company, ProductGroup
-from utils.simulationObjects import IndividualReports, CompanyReports, CompanyCreation
+from utils.simulationObjects import IndividualReports, CompanyReports
 from utils.database import DatabaseInfo, SimDatabase
 
 step_count = {}
@@ -51,7 +51,7 @@ def staged_stepping(
 
 
 class Economy:
-    creating_companies: List[CompanyCreation]
+    creating_companies: List
     removing_companies: List[Company]
     individual_stages: Sequence[Callable[..., bool] | None]
     company_stages: Sequence[Callable[..., bool] | None]
