@@ -4,7 +4,6 @@ from typing import List, Optional, Union, Iterable, Callable
 import numpy as np
 
 from utils.genericObjects import NamedObject, FundsObject
-from utils.calculation import calculate_choice_probabilities
 
 
 class Config:

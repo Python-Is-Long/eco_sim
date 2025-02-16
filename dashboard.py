@@ -37,23 +37,16 @@ app.layout = html.Div([
 
 # Function to load data from the pickle file
 def load_data():
-    try:
-        with open(PICKLE_FILE_PATH, 'rb') as f:
-            data_class = pickle.load(f)
-
-        if not isinstance(data_class, EconomyStats):
-            raise ValueError("❌ 讀取的數據格式錯誤！")
-
-        # 確保 `Total Money` 沒有異常變動
-        if data_class.total_money < 0:
-            print(f"⚠️ 錯誤：讀取數據後 `Total Money` 為負數！")
+    with open(PICKLE_FILE_PATH, 'rb') as f:
+        for i in range(10):
+            try:
+                data_class = pickle.load(f)
+                break
+            except pickle.UnpicklingError:
+                continue
+        else:
             return None
-
-        return data_class
-
-    except (pickle.UnpicklingError, FileNotFoundError, ValueError) as e:
-        print(f"❌ 讀取 `simulation_stats.pkl` 失敗: {e}")
-        return None
+    return data_class
 
 # Functions to get scalar and time-series attributes
 def get_time_series_attributes(data_class):
@@ -74,7 +67,6 @@ def get_scalar_attributes(data_class):
 def update_dashboard(n):
     economy_stats: EconomyStats = load_data()
     assert economy_stats, 'Unable to load data from the pickle file!'
-
 
     last_update = 'Last Update: {}'.format(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
