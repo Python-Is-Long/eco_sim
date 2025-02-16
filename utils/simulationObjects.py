@@ -7,10 +7,7 @@ import numpy as np
 
 
 from utils.genericObjects import Agent, FundsObject
-from utils.simulationUtils import Reports, AgentUpdates
-
-if TYPE_CHECKING:
-    from sim import Economy
+from utils.simulationUtils import Reports, AgentUpdates, SimulationAgents
 
 
 class Config:
@@ -75,7 +72,7 @@ class Product(Agent):
         company: 'Company',
         price: int | float = 1,
         quality: int | float = 1,
-        materials: Iterable['Product'] = None
+        materials: Optional[Iterable['Product']] = None
     ):
         super().__init__()
 
@@ -154,9 +151,10 @@ class IndividualReports(Reports):
 
 
 class Individual(FundsObject):
+    all_agents: SimulationAgents
     def __init__(
         self,
-        eco: 'Economy',
+        all_agents: SimulationAgents,
         talent: float,
         initial_funds: float,
         skills: Set[int],
@@ -164,12 +162,15 @@ class Individual(FundsObject):
         configuration: Config = Config()
     ):
         self.config = configuration
+        self.all_agents = all_agents
+        self.all_agents.add(self)
+
         super().__init__(
             starting_funds=initial_funds,
             funds_precision=configuration.FUNDS_PRECISION
         )
-        self.eco = eco
 
+        self.agent_updates = AgentUpdates(all_agents)
         self.talent = talent
         self.unemployed_state = 0
         self.employer: Optional[Company] = None
@@ -218,14 +219,18 @@ class Individual(FundsObject):
         chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
         return chosen_product
 
-    # Stage method
+    def get_market_potential(self):
+        # TODO: Handles case where len(self.companies) is 0
+        return np.log10(len(self.all_agents[Individual])) / len(self.all_agents[Company])
+
+    @Agent.stagemethod
     def find_opportunities(self) -> bool:
         # Find jobs if the individual is not employed
         if self.employer is None:
             # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
             ego_value = [1, 0.95, 0.9, 0.85, 0.8, 0.75]
             # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
-            for company in self.eco.companies:
+            for company in self.all_agents[Company]:
                 if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[self.unemployed_state]):
                     return True
             if self.unemployed_state < len(ego_value) - 1:
@@ -234,7 +239,7 @@ class Individual(FundsObject):
         # Start new company
         be_entrepreneur = self.choose_niche(niches=self.config.POSSIBLE_MARKETS)
         # TODO: Instead of random chance of starting a new company, consider the current market demands
-        if self.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < self.eco.market_potential and be_entrepreneur:
+        if self.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < self.get_market_potential() and be_entrepreneur:
             initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
             # Add this new company to a queue to be created by the main thread
             self.agent_updates.add_agent(Company, owner=self, initial_funds=initial_funds)
@@ -249,17 +254,17 @@ class Individual(FundsObject):
         # Evaluation based on how much funds the individual has and the product that they are purchasing
         pass
 
-    # Stage method
+    @Agent.stagemethod
     def purchase_product(self) -> bool:
-        target_product = self.decide_purchase(self.eco.get_all_products())
+        target_product = self.decide_purchase(ProductGroup(self.all_agents[Product]))
         if target_product is not None:
-            self.make_purchase(self.eco.companies, target_product)
+            self.make_purchase(self.all_agents[Company], target_product)
             self.agent_updates.attr_update(self, 'expenses', target_product.price)
         return True
 
     def report(self):
         return IndividualReports(
-            step=self.eco.stats.step,
+            step=self.step,
             name=self.name,
             funds=self.funds,
             income=self.income,
@@ -290,26 +295,29 @@ class CompanyReports(Reports):
 
 
 class Company(FundsObject):
+    all_agents: SimulationAgents
     owner: Individual
     def __init__(
-            self,
-            eco: 'Economy',
-            owner: Individual,
-            initial_funds: float = 0,
-            configuration: Config = Config()
+        self,
+        all_agents: SimulationAgents,
+        owner: Individual,
+        initial_funds: float = 0,
+        configuration: Config = Config()
     ):
         self.config = configuration
+        self.all_agents = all_agents
+        self.all_agents.add(self)
         super().__init__(
             starting_funds=initial_funds,
             funds_precision=self.config.FUNDS_PRECISION
         )
-        self.eco = eco
-
+        self.agent_updates = AgentUpdates(all_agents)
         self.set_funds(initial_funds)
         self.agent_updates.agent_list_update(owner, 'owning_company', 'append', self)
 
         self.employees: List[Individual] = []
         self.product = Product(self)
+        self.all_agents.add(self.product)
         self.revenue = self.config.FUNDS_PRECISION(0)
         self.raw_materials: List[Product] = []
         self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
@@ -317,7 +325,7 @@ class Company(FundsObject):
         self.profit_margin = 0.2  # (1 + profit margin) * price * sales = revenue  TODO: smart margin
 
     def __setattr__(self, key, value):
-        if key == "funds" and value > self.funds:
+        if key == "funds" and hasattr(self, 'funds') and hasattr(self, 'agent_updates') and value > self.funds:
             self.agent_updates.attr_update(self,'revenue', value - self.funds)
         super().__setattr__(key, value)
 
@@ -360,6 +368,9 @@ class Company(FundsObject):
     def estimate_sales(population: int, company_count: int) -> float:
         # TODO: Smarter estimate sales
         return population / company_count
+    
+    def get_all_unemployed(self):
+        return [i for i in self.all_agents[Individual] if i.employer is None]
 
     def update_product_attributes(self, population: int, company_count: int):
         # Update product quality and price
@@ -416,20 +427,20 @@ class Company(FundsObject):
         # The owner runs with leftover company funds
         self.transfer_funds_to(self.owner, self.funds)
         self.bankruptcy = True
-        self.eco.stats.num_bankruptcies += 1
+        # self.all_agents.stats.num_bankruptcies += 1
 
-    # Stage method
+    @Agent.stagemethod
     def update_product(self) -> bool:
         # Update company product prices and quality and reset revenue
         self.remove_raw_material()  # see if remove raw_material at this step
-        self.update_product_attributes(population=len(self.eco.individuals), company_count=len(self.eco.companies))
+        self.update_product_attributes(population=len(self.all_agents[Individual]), company_count=len(self.all_agents[Company]))
         self.agent_updates.attr_update(self, 'revenue', 0)
 
         # see if able to find a raw_material at this step
-        self.find_raw_material(self.eco.get_all_products())
+        self.find_raw_material(ProductGroup(self.all_agents[Product]))
         return True
 
-    # Stage method
+    @Agent.stagemethod
     def do_finance(self) -> bool:
         # Pay dividends from profit to owner
         self.transfer_funds_to(self.owner, self.dividend)
@@ -444,11 +455,11 @@ class Company(FundsObject):
         [e.transfer_funds_from(self, e.salary) for e in self.employees]
         return True
 
-    # Stage method
+    @Agent.stagemethod
     def adjust_workforce(self) -> bool:
         if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
             # Hire new employees
-            unemployed = self.eco.get_all_unemployed()
+            unemployed = self.get_all_unemployed()
             if unemployed:
                 new_employee = max(unemployed, key=lambda x: x.talent)
                 self.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
@@ -462,7 +473,7 @@ class Company(FundsObject):
 
     def report(self):
         return CompanyReports(
-            step=self.eco.stats.step,
+            step=self.step,
             name=self.name,
             owner=self.owner.name,
             funds=self.funds,

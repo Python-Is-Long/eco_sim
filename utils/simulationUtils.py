@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Any
+from typing import TYPE_CHECKING, TypeVar, Callable, Any, MutableMapping, Iterable, Optional
 from abc import ABC, abstractmethod
 
 from utils.data import to_db_types, convert_value
+from utils.genericObjects import Agent
 
 if TYPE_CHECKING:
-    from simulationObjects import Agent, Company, Individual, Product
+    from utils.simulationObjects import Company, Individual, Product
 
 
 @dataclass
@@ -96,7 +97,60 @@ class AttrUpdate(Update):
             setattr(self.agent_location, self.attr, self.value)
 
 
-SimulationAgents = dict[type['Agent'], list['Agent']]
+AgentType = TypeVar('AgentType', bound=Agent)
+class SimulationAgents(dict):
+    """A special dictionary type to store agents in the simulation."""
+    def __init__(self, agents: Optional[Iterable[AgentType]] = None):
+        super().__init__()
+        if agents is None:
+            agents = []
+        for agent in agents:
+            self.add(agent)
+
+    def __getitem__(self, key: type[AgentType]) -> list[AgentType]:
+        return super().__getitem__(key)
+
+    def add(self, agent: AgentType | Iterable[AgentType]):
+        """Add a single agent or multiple agents to the simulation."""
+        if isinstance(agent, Agent):
+            agent = [agent]
+
+        for a in agent:
+            agent_list = self.get(type(a), [])
+            if a in agent_list:
+                raise ValueError(f"Agent {a} already in the simulation")
+            agent_list.append(a)
+            self[type(a)] = agent_list
+
+    def remove(self, agent: AgentType | Iterable[AgentType]):
+        """Remove a single agent or multiple agents from the simulation."""
+        if isinstance(agent, Agent):
+            agent = [agent]
+
+        for a in agent:
+            agent_list = self.get(type(a), [])
+            if agent not in agent_list:
+                raise ValueError(f"Agent {a} not in the simulation")
+            agent_list.remove(a)
+    
+    def locate(self, location: AgentLocation) -> Agent:
+        """Get the agent from given location in the simulation."""
+        try:
+            return self[location.type][location.index]
+        except KeyError or IndexError:
+            raise ValueError(f"Could not find agent at: {location.type}[{location.index}]")
+
+    def get_location(self, agent: Agent) -> AgentLocation:
+        for agent_type, agent_list in self.items():
+            if agent in agent_list:
+                return AgentLocation(agent_type, agent_list.index(agent))
+        raise ValueError(f"Agent {agent} not found in the simulation")
+
+    def step_increase(self):
+        """Increase the step of all agents in the simulation."""
+        for agent_list in self.values():
+            for agent in agent_list:
+                agent.step += 1
 
 @dataclass
 class AgentListUpdate(Update):
@@ -160,13 +214,14 @@ class AgentUpdates:
     updates: list[Update]
 
     def __init__(self, agents: SimulationAgents):
-        from simulationObjects import Company, Individual, Product
+        from utils.simulationObjects import Company, Individual, Product
         self.agent_types = {
             Company: 'companies',
             Individual: 'individuals',
             Product: 'products',
         }
         self.agents = agents
+        self.updates = []
 
     def locate_agent(self, agent: 'Agent') -> AgentLocation:
         """Locate an agent in the simulation.
@@ -177,7 +232,7 @@ class AgentUpdates:
         agent_type = type(agent)
         try:
             return AgentLocation(agent_type, self.agents[agent_type].index(agent))
-        except ValueError:
+        except KeyError or ValueError:
             raise ValueError(f"Agent {agent} not found in any agent list")
 
     def attr_update(self, agent: 'Agent', attr: str, value: Any):
@@ -250,3 +305,7 @@ class AgentUpdates:
         update = AddAgent(agent_type, args, kwargs)
         update.apply(self.agents)
         self.updates.append(update)
+
+    def clear(self):
+        """Clear all updates."""
+        self.updates.clear()

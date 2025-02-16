@@ -1,74 +1,58 @@
+from dataclasses import dataclass
 import os
 import pickle
 import random
-from typing import List, Dict, Optional, Sequence, Callable
-from threading import Thread, Event
-import time
+from typing import List, Dict, Optional, Sequence, Callable, Any
+import multiprocessing as mp
 
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 import json
 
+from utils.genericObjects import Agent
 from utils.simulationObjects import Config, Individual, Company, ProductGroup
 from utils.simulationObjects import IndividualReports, CompanyReports
 from utils.database import DatabaseInfo, SimDatabase
+from utils.simulationUtils import SimulationAgents, AgentLocation, Update
 
-step_count = {}
+@dataclass
+class Task:
+    step: int
+    stage: int
+    action: Callable[[Agent], Any]
+    agent_location: AgentLocation
+    all_agents: SimulationAgents
 
-def staged_stepping(
-    agent,
-    stages: Sequence[Callable[..., bool] | Sequence[Callable[..., bool]] | None],
-    start_stage_event: Event,
-    end_stage_event: Event
-):
-    global step_count
-    step_count[agent] = 0
-    current_step = 0
-    still_live = True
-    while still_live:
-        current_step += 1
-        for i, stage in enumerate(stages):
-            # Wait for the start of the stage
-            start_stage_event.wait()
-            # Clear the end stage event immediately for the main thread will wait before this stage completes
-            end_stage_event.clear()
-            step_count[agent] = current_step + i / 10
-            # Execute the stage
-            if stage is not None:
-                if callable(stage):
-                    still_live = stage(agent)
-                else:
-                    for s in stage:
-                        still_live = s(agent)
-                        if not still_live:
-                            break
-            # Notify the main thread that the stage is complete
-            end_stage_event.set()
-            # Terminates the thread if the agent is no longer alive
-            if not still_live:
-                break
+
+def tasking(task_queue: mp.Queue, return_queue: mp.Queue):
+    while True:
+        task: Task = task_queue.get()
+        if task is None:
+            break
+        agent = task.all_agents.locate(task.agent_location)
+        task.action(agent)
+        return_queue.put(agent.agent_updates.updates)
 
 
 class Economy:
+    step: int = 0
     creating_companies: List
     removing_companies: List[Company]
     individual_stages: Sequence[Callable[..., bool] | None]
     company_stages: Sequence[Callable[..., bool] | None]
 
-    def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config()):
+    def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config(), multiprocess: bool = True):
         self.config = config
-
-        self.individuals = self._create_individuals(self.config.NUM_INDIVIDUAL)
-        self.companies = self._create_companies(self.config.NUM_COMPANY)
-        self.market_potential = 0
-        self.all_companies = self.companies.copy()
+        
+        self.all_agents = SimulationAgents()
+        self._create_individuals(self.config.NUM_INDIVIDUAL)
+        self._create_companies(self.config.NUM_COMPANY)
         self.stats = EconomyStats()
         self.report_types = [IndividualReports, CompanyReports]
         self.creating_companies = []
         self.removing_companies = []
-        self.start_stage_event = Event()
-        self.end_stage_events = []
+        self.multiprocess = multiprocess
         self.threads = []
 
         self.db_connection = True if db_info else False
@@ -84,43 +68,40 @@ class Economy:
             self.handle_company_removal,
             self.handle_company_creation,
         ]
-        self.individual_stages = [
-            None,
-            Individual.purchase_product,  # Individuals spend money
-            None,
-            Individual.find_opportunities,  # Individuals find jobs or create new company
-            None,
-        ]
-        self.company_stages = [
-            Company.update_product, # Update company product prices and quality and find new materials
-            None,
-            Company.do_finance,  # Company checks for bankruptcy and pays dividends then pays salaries
-            None,
-            Company.adjust_workforce,  # Adjust workforce for companies
+        self.staging = [
+            (Company, Company.update_product),  # Update company product prices and quality and find new materials
+            (Individual, Individual.purchase_product),  # Individuals spend money
+            (Company, Company.do_finance),  # Company checks for bankruptcy and pays dividends then pays salaries
+            (Individual, Individual.find_opportunities),  # Individuals find jobs or create new company
+            (Company, Company.adjust_workforce),  # Adjust workforce for companies
         ]
 
-        assert len(self.before_stage) == len(self.individual_stages) == len(self.company_stages), \
-            'All stages must be the same length!'
+        assert len(self.before_stage) == len(self.staging), 'Stages must be the same length!'
 
-        [self.create_thread(i) for i in self.individuals]
-        [self.create_thread(c) for c in self.companies]
+        if self.multiprocess:
+            self.task_queue = mp.Queue()
+            self.return_queue = mp.Queue()
+            self.workers = []
+            for _ in range(mp.cpu_count()):
+                worker_process = mp.Process(target=tasking, args=(self.task_queue, self.return_queue))
+                worker_process.start()
+                self.workers.append(worker_process)
 
-    def _create_individuals(self, num_individuals: int) -> List[Individual]:
+    def _create_individuals(self, num_individuals: int):
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
         initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_INDIVIDUAL, num_individuals)
         risk_tolerance = [round(random.uniform(0.5, 2.0), 2) for _ in range(num_individuals)]
         skills = [set(random.choices(self.config.POSSIBLE_MARKETS, k=self.config.MAX_SKILLS)) for _ in range(num_individuals)]
-        return [Individual(self, t, f, skills=s, risk_tolerance=r, configuration=self.config) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
+        [Individual(self.all_agents, t, f, skills=s, risk_tolerance=r, configuration=self.config) for t, f, s, r in zip(talents, initial_funds, skills, risk_tolerance)]
 
-    def _create_companies(self, num_companies: int) -> List[Company]:
-        companies = []
-        available_workers = set(self.individuals)
+    def _create_companies(self, num_companies: int):
+        available_workers = set(self.all_agents[Individual])
 
         for _ in range(num_companies):
             owner = random.choice(list(available_workers))
             available_workers.remove(owner)
             initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_COMPANY)
-            company = Company(self, owner, initial_funds)
+            company = Company(self.all_agents, owner, initial_funds)
 
             # Hire initial employees
             num_initial_employees = min(company.max_employees, len(available_workers), random.randint(1, 10))
@@ -135,58 +116,48 @@ class Economy:
                     if company.hire_employee(employee, initial_salary):
                         available_workers.remove(employee)
 
-            companies.append(company)
-        return companies
-
-    def create_thread(self, agent: Individual | Company):
-        end_stage_event = Event()
-        self.end_stage_events.append(end_stage_event)
-        stages = self.company_stages if isinstance(agent, Company) else self.individual_stages
-        thread = Thread(
-            target=staged_stepping,
-            args=(agent, stages, self.start_stage_event, end_stage_event),
-            daemon=True,
-        )
-        self.threads.append(thread)
-        thread.start()
-
     def get_all_products(self) -> ProductGroup:
-        return ProductGroup([company.product for company in self.companies])
+        return ProductGroup([company.product for company in self.all_agents[Company]])
 
     def get_all_unemployed(self):
-        return [i for i in self.individuals if i.employer is None]
-
+        return [i for i in self.all_agents[Individual] if i.employer is None]
+    
     def simulate_step(self):
-        self.stats.step += 1
+        self.step += 1
+        self.all_agents.step_increase()
         # Collect statistics
         self.collect_statistics()
 
-        for company in self.companies:
+        for company in self.all_agents[Company]:
             company.update_product()
 
         # Individuals spend money
-        for individual in self.individuals:
+        for individual in self.all_agents[Individual]:
             individual.purchase_product()
 
         # Company checks for bankruptcy and pays dividends then pays salaries
-        for company in self.companies:
+        for company in self.all_agents[Company]:
             company.do_finance()
         self.handle_company_removal()
 
         # Individuals find jobs or create new company
-        self.update_market_potential()
-        for individual in self.individuals:
+        for individual in self.all_agents[Individual]:
             individual.find_opportunities()
         self.handle_company_creation()
 
         # Adjust workforce for companies
-        for company in self.companies:
+        for company in self.all_agents[Company]:
             company.adjust_workforce()
 
         # Insert reports into database if there is a connection
         self.reports()
 
-    def simulate_step_threaded(self):
+    def simulate_step_mp(self):
+        if not self.multiprocess:
+            raise RuntimeError('Multiprocessing is not enabled!')
+        current_stage = 0
+        self.all_agents.step_increase()
+        
         for e in self.before_stage:
             # Execute the code before a stage starts
             if e is not None:
@@ -194,37 +165,53 @@ class Economy:
                     e()
                 else:
                     [i() for i in e if i]
-            # Start the stage
-            self.start_stage_event.set()
-            time.sleep(0.001)
-            self.start_stage_event.clear()
-            [e.wait() for e in self.end_stage_events]
 
-            # Check if all threads are on the same step
-            if len(set(step_count.values())) == 1:
-                print("Threads are not on the same step: {step_count}")
-                print(step_count)
+            # Send tasks for subprocesses to execute
+            agent_type, action = self.staging[current_stage]
+            agents = self.all_agents[agent_type]
+            for agent in agents:
+                task = Task(
+                    step=self.step,
+                    stage=current_stage,
+                    action=action,
+                    agent_location=self.all_agents.get_location(agent),
+                    all_agents=self.all_agents,
+                )
+                self.task_queue.put(task)
+            
+            # Process all the results returned by subprocesses
+            for i in range(len(agents)):
+                updates: list[Update] = self.return_queue.get()
+                # Apply the updates returned by the subprocess to the main process
+                [u.apply(self.all_agents) for u in updates]
+
+    def end_mp(self):
+        if not self.multiprocess:
+            raise RuntimeError('Multiprocessing is not enabled!')
+
+        for _ in range(len(self.workers)):
+            self.task_queue.put(None)
+        for worker in self.workers:
+            worker.join()
+        self.multiprocess = False
 
     def reports(self):
         if self.db_connection:
-            self.db.insert_reports([i.report() for i in self.individuals])
-            self.db.insert_reports([c.report() for c in self.companies])
+            self.db.insert_reports([i.report() for i in self.all_agents[Individual]])
+            self.db.insert_reports([c.report() for c in self.all_agents[Company]])
 
     def handle_company_creation(self):
         for c in self.creating_companies:
-            new_company = Company(self, c.owner)
+            new_company = Company(c.owner)
             c.owner.transfer_funds_to(new_company, c.initial_funds)
-            self.companies.append(new_company)
+            self.all_agents.add(new_company)
             self.stats.num_new_companies += 1
         self.creating_companies = []
 
     def handle_company_removal(self):
-        [self.companies.remove(c) for c in self.removing_companies]
+        for c in self.removing_companies:
+            self.all_agents.remove(c)
         self.removing_companies = []
-
-    def update_market_potential(self):
-        # TODO: Handles case where len(self.companies) is 0
-        self.market_potential = np.log10(len(self.individuals)) / len(self.companies)
 
     def save_state(self, filename: str):
         with open(filename, 'wb') as f:
@@ -236,33 +223,34 @@ class Economy:
             return pickle.load(f)
 
     def collect_statistics(self):
-        individual_wealths = [ind.funds for ind in self.individuals]
-        company_wealths = [comp.funds for comp in self.companies]
-        employed = len([ind for ind in self.individuals if ind.employer])
+        self.stats.step = self.step
+        individual_wealths = [ind.funds for ind in self.all_agents[Individual]]
+        company_wealths = [comp.funds for comp in self.all_agents[Company]]
+        employed = len([ind for ind in self.all_agents[Individual] if ind.employer])
 
         self.stats.individual_wealth_gini.append(self.stats.calculate_gini(individual_wealths))
         self.stats.avg_individual_wealth.append(np.mean(individual_wealths))
         self.stats.sum_individual_wealth.append(np.sum(individual_wealths))
         self.stats.sum_company_wealth.append(np.sum(company_wealths))
-        self.stats.num_companies.append(len(self.companies))
-        self.stats.unemployment_rate.append(1 - employed / len(self.individuals))
+        self.stats.num_companies.append(len(self.all_agents[Company]))
+        self.stats.unemployment_rate.append(1 - employed / len(self.all_agents[Individual]))
         self.stats.bankruptcies_over_time.append(self.stats.num_bankruptcies)  # Track bankruptcies
         self.stats.new_companies_over_time.append(self.stats.num_new_companies)  # Track new companies
 
         self.stats.total_money = round(self.stats.sum_individual_wealth[-1] + self.stats.sum_company_wealth[-1])
 
         to_low_precision = lambda x: float(np.float32(x))
-        self.stats.all_company_funds.append([to_low_precision(c.funds) for c in self.companies])
-        self.stats.all_individual_funds.append([to_low_precision(i.funds) for i in self.individuals])
-        self.stats.all_product_prices.append([to_low_precision(c.product.price) for c in self.companies])
-        self.stats.all_salaries.append([to_low_precision(e.salary) for e in self.individuals if e.employer])
-        self.stats.all_employee_counts.append([len(c.employees) for c in self.companies])
+        self.stats.all_company_funds.append([to_low_precision(c.funds) for c in self.all_agents[Company]])
+        self.stats.all_individual_funds.append([to_low_precision(i.funds) for i in self.all_agents[Individual]])
+        self.stats.all_product_prices.append([to_low_precision(c.product.price) for c in self.all_agents[Company]])
+        self.stats.all_salaries.append([to_low_precision(e.salary) for e in self.all_agents[Individual] if e.employer])
+        self.stats.all_employee_counts.append([len(c.employees) for c in self.all_agents[Company]])
 
-        if self.companies:
-            self.stats.avg_product_quality.append(np.mean([c.product.quality for c in self.companies]))
-            self.stats.avg_product_price.append(np.mean([c.product.price for c in self.companies]))
-            self.stats.avg_company_raw_materials.append(np.mean([len(c.raw_materials) for c in self.companies]))
-            self.stats.avg_company_employees.append(np.mean([len(c.employees) for c in self.companies]))
+        if self.all_agents[Company]:
+            self.stats.avg_product_quality.append(np.mean([c.product.quality for c in self.all_agents[Company]]))
+            self.stats.avg_product_price.append(np.mean([c.product.price for c in self.all_agents[Company]]))
+            self.stats.avg_company_raw_materials.append(np.mean([len(c.raw_materials) for c in self.all_agents[Company]]))
+            self.stats.avg_company_employees.append(np.mean([len(c.employees) for c in self.all_agents[Company]]))
         else:
             self.stats.avg_product_quality.append(0)
             self.stats.avg_product_price.append(0)
@@ -345,14 +333,15 @@ def run_simulation(
             # DatabaseInfo(**db_info),
             config=config,
         )
-    for _ in tqdm(range(num_steps - economy.stats.step), desc="Simulating economy"):
+    for _ in tqdm(range(num_steps - economy.step), desc="Simulating economy"):
         # economy.simulate_step()
-        economy.simulate_step_threaded()
+        economy.simulate_step_mp()
         # economy.all_companies[0].print_statistics()
         economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
         # economy.save_state("economy_simulation.pkl")
+    economy.end_mp()
     return economy
 
 
@@ -410,15 +399,15 @@ def run_simulation(
 
 def print_summary(economy: Economy):
     print("\nFinal Economic Statistics:")
-    print(f"Number of individuals: {len(economy.individuals)}")
-    print(f"Number of companies: {len(economy.companies)}")
+    print(f"Number of individuals: {len(economy.all_agents[Individual])}")
+    print(f"Number of companies: {len(economy.all_agents[Company])}")
     print(f"Average wealth: {economy.stats.avg_individual_wealth[-1]:.2f}")
     print(f"Wealth inequality (Gini): {economy.stats.individual_wealth_gini[-1]:.2f}")
     print(f"Unemployment rate: {economy.stats.unemployment_rate[-1]:.2%}")
     print(f"Total bankruptcies: {economy.stats.num_bankruptcies}")
     print(f"Total new companies: {economy.stats.num_new_companies}")
 
-    wealth_percentiles = np.percentile([ind.funds for ind in economy.individuals], [25, 50, 75, 90, 99])
+    wealth_percentiles = np.percentile([ind.funds for ind in economy.all_agents[Individual]], [25, 50, 75, 90, 99])
     print("\nWealth Distribution:")
     print(f"25th percentile: {wealth_percentiles[0]:.2f}")
     print(f"Median: {wealth_percentiles[1]:.2f}")
@@ -433,8 +422,8 @@ if __name__ == "__main__":
 
     # # Run simulation
     economy = run_simulation(
-        num_individuals=100,
-        num_companies=5,
+        num_individuals=1000,
+        num_companies=50,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
