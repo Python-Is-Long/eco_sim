@@ -40,15 +40,15 @@ class FundsObject:
         """
         if self.funds < amount:
             return False
-        
+
         # Warning when transferring funds to an account with a different precision
         if self._funds_precision != target_object._funds_precision:
             self._warn_different_precision()
-        
+
         self.modify_funds(-amount)
         target_object.modify_funds(amount)
         return True
-    
+
     def transfer_funds_from(self, target_object: 'FundsObject', amount: Union[int, float]) -> bool:
         """Transfer funds from target object to current object.
         Returns True if the transfer was successful, False otherwise.

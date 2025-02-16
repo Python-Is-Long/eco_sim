@@ -67,7 +67,7 @@ def get_scalar_attributes(data_class):
 def update_dashboard(n):
     economy_stats: EconomyStats = load_data()
     assert economy_stats, 'Unable to load data from the pickle file!'
-        
+
     last_update = 'Last Update: {}'.format(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
     # Get attributes
