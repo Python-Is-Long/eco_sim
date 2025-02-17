@@ -223,8 +223,9 @@ class Individual(FundsObject):
         # TODO: Handles case where len(self.companies) is 0
         return np.log10(len(self.all_agents[Individual])) / len(self.all_agents[Company])
 
-    @Agent.stagemethod
+    # Stage method
     def find_opportunities(self) -> bool:
+        self.agent_updates.clear()
         # Find jobs if the individual is not employed
         if self.employer is None:
             # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
@@ -254,8 +255,9 @@ class Individual(FundsObject):
         # Evaluation based on how much funds the individual has and the product that they are purchasing
         pass
 
-    @Agent.stagemethod
+    # Stage method
     def purchase_product(self) -> bool:
+        self.agent_updates.clear()
         target_product = self.decide_purchase(ProductGroup(self.all_agents[Product]))
         if target_product is not None:
             self.make_purchase(self.all_agents[Company], target_product)
@@ -313,6 +315,7 @@ class Company(FundsObject):
         )
         self.agent_updates = AgentUpdates(all_agents)
         self.set_funds(initial_funds)
+        self.owner = owner
         self.agent_updates.agent_list_update(owner, 'owning_company', 'append', self)
 
         self.employees: List[Individual] = []
@@ -429,8 +432,9 @@ class Company(FundsObject):
         self.bankruptcy = True
         # self.all_agents.stats.num_bankruptcies += 1
 
-    @Agent.stagemethod
+    # Stage method
     def update_product(self) -> bool:
+        self.agent_updates.clear()
         # Update company product prices and quality and reset revenue
         self.remove_raw_material()  # see if remove raw_material at this step
         self.update_product_attributes(population=len(self.all_agents[Individual]), company_count=len(self.all_agents[Company]))
@@ -440,8 +444,9 @@ class Company(FundsObject):
         self.find_raw_material(ProductGroup(self.all_agents[Product]))
         return True
 
-    @Agent.stagemethod
+    # Stage method
     def do_finance(self) -> bool:
+        self.agent_updates.clear()
         # Pay dividends from profit to owner
         self.transfer_funds_to(self.owner, self.dividend)
         # Check for bankruptcy
@@ -455,8 +460,9 @@ class Company(FundsObject):
         [e.transfer_funds_from(self, e.salary) for e in self.employees]
         return True
 
-    @Agent.stagemethod
+    # Stage method
     def adjust_workforce(self) -> bool:
+        self.agent_updates.clear()
         if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
             # Hire new employees
             unemployed = self.get_all_unemployed()

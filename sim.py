@@ -4,6 +4,7 @@ import pickle
 import random
 from typing import List, Dict, Optional, Sequence, Callable, Any
 import multiprocessing as mp
+from multiprocessing import shared_memory
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,21 +17,27 @@ from utils.simulationObjects import IndividualReports, CompanyReports
 from utils.database import DatabaseInfo, SimDatabase
 from utils.simulationUtils import SimulationAgents, AgentLocation, Update
 
+
 @dataclass
 class Task:
     step: int
     stage: int
     action: Callable[[Agent], Any]
     agent_location: AgentLocation
-    all_agents: SimulationAgents
+    shm_name: str
 
 
 def tasking(task_queue: mp.Queue, return_queue: mp.Queue):
+    current_shm_name = None
     while True:
         task: Task = task_queue.get()
         if task is None:
             break
-        agent = task.all_agents.locate(task.agent_location)
+        if current_shm_name != task.shm_name:
+            shm = shared_memory.SharedMemory(name=task.shm_name)
+            all_agents: SimulationAgents = pickle.loads(shm.buf[:])
+            current_shm_name = task.shm_name
+        agent = all_agents.locate(task.agent_location)
         task.action(agent)
         return_queue.put(agent.agent_updates.updates)
 
@@ -39,8 +46,7 @@ class Economy:
     step: int = 0
     creating_companies: List
     removing_companies: List[Company]
-    individual_stages: Sequence[Callable[..., bool] | None]
-    company_stages: Sequence[Callable[..., bool] | None]
+    staging: Sequence[tuple[type[Agent], Callable[..., bool]]]
 
     def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config(), multiprocess: bool = True):
         self.config = config
@@ -98,6 +104,8 @@ class Economy:
         available_workers = set(self.all_agents[Individual])
 
         for _ in range(num_companies):
+            if not available_workers:
+                break
             owner = random.choice(list(available_workers))
             available_workers.remove(owner)
             initial_funds = np.random.exponential(self.config.INITIAL_FUNDS_COMPANY)
@@ -169,13 +177,17 @@ class Economy:
             # Send tasks for subprocesses to execute
             agent_type, action = self.staging[current_stage]
             agents = self.all_agents[agent_type]
+            # Serialize the agents and send them to the subprocesses through a shared memory
+            bytes_all_agents = pickle.dumps(self.all_agents)
+            shm = shared_memory.SharedMemory(create=True, size=len(bytes_all_agents))
+            shm.buf[:] = bytes_all_agents
             for agent in agents:
                 task = Task(
                     step=self.step,
                     stage=current_stage,
                     action=action,
                     agent_location=self.all_agents.get_location(agent),
-                    all_agents=self.all_agents,
+                    shm_name=shm.name,
                 )
                 self.task_queue.put(task)
             
@@ -184,6 +196,9 @@ class Economy:
                 updates: list[Update] = self.return_queue.get()
                 # Apply the updates returned by the subprocess to the main process
                 [u.apply(self.all_agents) for u in updates]
+            # Close the shared memory
+            shm.close()
+            shm.unlink()
 
     def end_mp(self):
         if not self.multiprocess:
@@ -202,7 +217,7 @@ class Economy:
 
     def handle_company_creation(self):
         for c in self.creating_companies:
-            new_company = Company(c.owner)
+            new_company = Company(self.all_agents, c.owner)
             c.owner.transfer_funds_to(new_company, c.initial_funds)
             self.all_agents.add(new_company)
             self.stats.num_new_companies += 1
@@ -334,8 +349,8 @@ def run_simulation(
             config=config,
         )
     for _ in tqdm(range(num_steps - economy.step), desc="Simulating economy"):
-        # economy.simulate_step()
-        economy.simulate_step_mp()
+        economy.simulate_step()
+        # economy.simulate_step_mp()
         # economy.all_companies[0].print_statistics()
         economy.stats.save_stats("simulation_stats.pkl")
 
@@ -420,10 +435,10 @@ if __name__ == "__main__":
     np.random.seed(42)
     random.seed(42)
 
-    # # Run simulation
+    # Run simulation
     economy = run_simulation(
         num_individuals=1000,
-        num_companies=50,
+        num_companies=500,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,

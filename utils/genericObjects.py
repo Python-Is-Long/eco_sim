@@ -19,14 +19,6 @@ class Agent:
         super().__init__(*args, **kwargs)
         self.name = str(uuid.uuid4())
 
-    @staticmethod
-    def stagemethod(method: Callable[['Agent'], None]) -> Callable[['Agent'], None]:
-        def decorator(self: Agent):
-            self.agent_updates.clear()
-            method(self)
-
-        return decorator
-
 
 class FundsObject(Agent):
     """A class that manages funds for a subclass."""
