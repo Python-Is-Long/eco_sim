@@ -147,7 +147,7 @@ class SimulationAgents(dict):
         raise ValueError(f"Agent {agent} not found in the simulation")
 
     def step_increase(self):
-        """Increase the step of all agents in the simulation."""
+        """Increase the step count of all agents in the simulation."""
         for agent_list in self.values():
             for agent in agent_list:
                 agent.step += 1

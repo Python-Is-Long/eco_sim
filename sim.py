@@ -20,8 +20,6 @@ from utils.simulationUtils import SimulationAgents, AgentLocation, Update
 
 @dataclass
 class Task:
-    step: int
-    stage: int
     action: Callable[[Agent], Any]
     agent_location: AgentLocation
     shm_name: str
@@ -47,8 +45,9 @@ class Economy:
     creating_companies: List
     removing_companies: List[Company]
     staging: Sequence[tuple[type[Agent], Callable[..., bool]]]
+    workers: List[mp.Process]
 
-    def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config(), multiprocess: bool = True):
+    def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config()):
         self.config = config
         
         self.all_agents = SimulationAgents()
@@ -58,22 +57,18 @@ class Economy:
         self.report_types = [IndividualReports, CompanyReports]
         self.creating_companies = []
         self.removing_companies = []
-        self.multiprocess = multiprocess
         self.threads = []
+        self.multiprocess = False
 
+        self.task_queue = mp.Queue()
+        self.return_queue = mp.Queue()
+        self.workers = []
+        
         self.db_connection = True if db_info else False
         if db_info:
             self.db = SimDatabase(db_info, self.report_types)
             self.db.create_database('ECOSIM')
 
-        # Economy methods that runs before each stage
-        self.before_stage = [
-            [self.collect_statistics, self.reports],
-            None,
-            None,
-            self.handle_company_removal,
-            self.handle_company_creation,
-        ]
         self.staging = [
             (Company, Company.update_product),  # Update company product prices and quality and find new materials
             (Individual, Individual.purchase_product),  # Individuals spend money
@@ -81,17 +76,6 @@ class Economy:
             (Individual, Individual.find_opportunities),  # Individuals find jobs or create new company
             (Company, Company.adjust_workforce),  # Adjust workforce for companies
         ]
-
-        assert len(self.before_stage) == len(self.staging), 'Stages must be the same length!'
-
-        if self.multiprocess:
-            self.task_queue = mp.Queue()
-            self.return_queue = mp.Queue()
-            self.workers = []
-            for _ in range(mp.cpu_count()):
-                worker_process = mp.Process(target=tasking, args=(self.task_queue, self.return_queue))
-                worker_process.start()
-                self.workers.append(worker_process)
 
     def _create_individuals(self, num_individuals: int):
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
@@ -123,6 +107,22 @@ class Economy:
                     initial_salary = 50 + employee.talent * 0.5
                     if company.hire_employee(employee, initial_salary):
                         available_workers.remove(employee)
+    def start_processes(self):
+        for _ in range(mp.cpu_count()):
+            worker_process = mp.Process(target=tasking, args=(self.task_queue, self.return_queue))
+            worker_process.start()
+            self.workers.append(worker_process)
+        self.multiprocess = True
+    
+    def end_processes(self):
+        if not self.multiprocess:
+            raise RuntimeError('Multiprocessing is not enabled!')
+
+        for _ in range(len(self.workers)):
+            self.task_queue.put(None)
+        for worker in self.workers:
+            worker.join()
+        self.multiprocess = False
 
     def get_all_products(self) -> ProductGroup:
         return ProductGroup([company.product for company in self.all_agents[Company]])
@@ -133,8 +133,6 @@ class Economy:
     def simulate_step(self):
         self.step += 1
         self.all_agents.step_increase()
-        # Collect statistics
-        self.collect_statistics()
 
         for company in self.all_agents[Company]:
             company.update_product()
@@ -146,87 +144,62 @@ class Economy:
         # Company checks for bankruptcy and pays dividends then pays salaries
         for company in self.all_agents[Company]:
             company.do_finance()
-        self.handle_company_removal()
+        # self.handle_company_removal()
 
         # Individuals find jobs or create new company
         for individual in self.all_agents[Individual]:
             individual.find_opportunities()
-        self.handle_company_creation()
+        # self.handle_company_creation()
 
         # Adjust workforce for companies
         for company in self.all_agents[Company]:
             company.adjust_workforce()
 
-        # Insert reports into database if there is a connection
+        # Collect statistics
+        self.collect_statistics()
         self.reports()
 
     def simulate_step_mp(self):
         if not self.multiprocess:
-            raise RuntimeError('Multiprocessing is not enabled!')
-        current_stage = 0
+            print('Processes have not been started. Starting processes...')
+            self.start_processes()
+        self.step += 1
         self.all_agents.step_increase()
         
-        for e in self.before_stage:
-            # Execute the code before a stage starts
-            if e is not None:
-                if callable(e):
-                    e()
-                else:
-                    [i() for i in e if i]
-
-            # Send tasks for subprocesses to execute
-            agent_type, action = self.staging[current_stage]
-            agents = self.all_agents[agent_type]
-            # Serialize the agents and send them to the subprocesses through a shared memory
+        for agent_type, action in self.staging:
+            # Serialize the all agents and store them in a shared memory
             bytes_all_agents = pickle.dumps(self.all_agents)
             shm = shared_memory.SharedMemory(create=True, size=len(bytes_all_agents))
             shm.buf[:] = bytes_all_agents
-            for agent in agents:
+            
+            # Select the agents for the current stage and create tasks then send them to subprocesses
+            stage_agent_count = len(self.all_agents[agent_type])
+            for idx in range(stage_agent_count):
                 task = Task(
-                    step=self.step,
-                    stage=current_stage,
                     action=action,
-                    agent_location=self.all_agents.get_location(agent),
+                    agent_location=AgentLocation(agent_type, idx),
                     shm_name=shm.name,
                 )
                 self.task_queue.put(task)
             
             # Process all the results returned by subprocesses
-            for i in range(len(agents)):
+            for i in range(stage_agent_count):
                 updates: list[Update] = self.return_queue.get()
-                # Apply the updates returned by the subprocess to the main process
+                # Apply the updates returned by the subprocess in the main process
                 [u.apply(self.all_agents) for u in updates]
+
             # Close the shared memory
             shm.close()
             shm.unlink()
-
-    def end_mp(self):
-        if not self.multiprocess:
-            raise RuntimeError('Multiprocessing is not enabled!')
-
-        for _ in range(len(self.workers)):
-            self.task_queue.put(None)
-        for worker in self.workers:
-            worker.join()
-        self.multiprocess = False
+            
+            # Collect statistics
+            self.collect_statistics()
+            self.reports()
 
     def reports(self):
         if self.db_connection:
             self.db.insert_reports([i.report() for i in self.all_agents[Individual]])
             self.db.insert_reports([c.report() for c in self.all_agents[Company]])
-
-    def handle_company_creation(self):
-        for c in self.creating_companies:
-            new_company = Company(self.all_agents, c.owner)
-            c.owner.transfer_funds_to(new_company, c.initial_funds)
-            self.all_agents.add(new_company)
-            self.stats.num_new_companies += 1
-        self.creating_companies = []
-
-    def handle_company_removal(self):
-        for c in self.removing_companies:
-            self.all_agents.remove(c)
-        self.removing_companies = []
 
     def save_state(self, filename: str):
         with open(filename, 'wb') as f:
@@ -349,14 +322,14 @@ def run_simulation(
             config=config,
         )
     for _ in tqdm(range(num_steps - economy.step), desc="Simulating economy"):
-        economy.simulate_step()
-        # economy.simulate_step_mp()
+        # economy.simulate_step()
+        economy.simulate_step_mp()
         # economy.all_companies[0].print_statistics()
         economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
         # economy.save_state("economy_simulation.pkl")
-    economy.end_mp()
+    economy.end_processes()
     return economy
 
 
