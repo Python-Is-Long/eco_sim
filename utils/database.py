@@ -1,11 +1,10 @@
-import time
 from dataclasses import dataclass
 from typing import Any, Sequence
 import re
 
 import clickhouse_connect
 
-from utils.simulationObjects import Reports
+from utils.simulationUtils import Reports
 
 def create_table(table_name: str, columns: dict[str, Any]):
     """Generates the SQL to create a table with the given column schema"""

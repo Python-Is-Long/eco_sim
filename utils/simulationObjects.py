@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 
-from utils.genericObjects import Agent, FundsObject
-from utils.simulationUtils import Reports, AgentUpdates, SimulationAgents
+from utils.simulationUtils import Agent, FundsAgent, Reports, SimulationAgents, AgentUpdates
 
 
 class Config:
@@ -69,12 +68,13 @@ class NicheMarket:
 class Product(Agent):
     def __init__(
         self,
+        all_agents: SimulationAgents,
         company: 'Company',
         price: int | float = 1,
         quality: int | float = 1,
         materials: Optional[Iterable['Product']] = None
     ):
-        super().__init__()
+        super().__init__(all_agents)
 
         self.quality = quality
         self.price = price
@@ -150,7 +150,7 @@ class IndividualReports(Reports):
         return 'individual'
 
 
-class Individual(FundsObject):
+class Individual(FundsAgent):
     all_agents: SimulationAgents
     def __init__(
         self,
@@ -162,10 +162,9 @@ class Individual(FundsObject):
         configuration: Config = Config()
     ):
         self.config = configuration
-        self.all_agents = all_agents
-        self.all_agents.add(self)
 
         super().__init__(
+            all_agents=all_agents,
             starting_funds=initial_funds,
             funds_precision=configuration.FUNDS_PRECISION
         )
@@ -225,17 +224,19 @@ class Individual(FundsObject):
 
     # Stage method
     def find_opportunities(self) -> bool:
-        self.update.clear_history()
         # Find jobs if the individual is not employed
         if self.employer is None:
             # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
             ego_value = [1, 0.95, 0.9, 0.85, 0.8, 0.75]
             # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
             for company in self.all_agents[Company]:
+                # Try to get a job at a company, if successful, break the loop
                 if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[self.unemployed_state]):
-                    return True
-            if self.unemployed_state < len(ego_value) - 1:
-                self.update.attr_update(self, 'unemployed_state', self.unemployed_state + 1)
+                    break
+            else:
+                # When no job is found, increase the ego value
+                if self.unemployed_state < len(ego_value) - 1:
+                    self.update.attr_update(self, 'unemployed_state', self.unemployed_state + 1)
 
         # Start new company
         be_entrepreneur = self.choose_niche(niches=self.config.POSSIBLE_MARKETS)
@@ -257,7 +258,6 @@ class Individual(FundsObject):
 
     # Stage method
     def purchase_product(self) -> bool:
-        self.update.clear_history()
         target_product = self.decide_purchase(ProductGroup(self.all_agents[Product]))
         if target_product is not None:
             self.make_purchase(self.all_agents[Company], target_product)
@@ -296,7 +296,7 @@ class CompanyReports(Reports):
         return 'company'
 
 
-class Company(FundsObject):
+class Company(FundsAgent):
     all_agents: SimulationAgents
     owner: Individual
     def __init__(
@@ -307,9 +307,9 @@ class Company(FundsObject):
         configuration: Config = Config()
     ):
         self.config = configuration
-        self.all_agents = all_agents
-        self.all_agents.add(self)
+        
         super().__init__(
+            all_agents=all_agents,
             starting_funds=initial_funds,
             funds_precision=self.config.FUNDS_PRECISION
         )
@@ -319,8 +319,7 @@ class Company(FundsObject):
         self.update.agent_list_update(owner, 'owning_company', 'append', self)
 
         self.employees: List[Individual] = []
-        self.product = Product(self)
-        self.all_agents.add(self.product)
+        self.product = Product(self.all_agents, company=self)
         self.revenue = self.config.FUNDS_PRECISION(0)
         self.raw_materials: List[Product] = []
         self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
@@ -434,7 +433,6 @@ class Company(FundsObject):
 
     # Stage method
     def update_product(self) -> bool:
-        self.update.clear_history()
         # Update company product prices and quality and reset revenue
         self.remove_raw_material()  # see if remove raw_material at this step
         self.update_product_attributes(population=len(self.all_agents[Individual]), company_count=len(self.all_agents[Company]))
@@ -446,7 +444,6 @@ class Company(FundsObject):
 
     # Stage method
     def do_finance(self) -> bool:
-        self.update.clear_history()
         # Pay dividends from profit to owner
         self.transfer_funds_to(self.owner, self.dividend)
         # Check for bankruptcy
@@ -462,7 +459,6 @@ class Company(FundsObject):
 
     # Stage method
     def adjust_workforce(self) -> bool:
-        self.update.clear_history()
         if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
             # Hire new employees
             unemployed = self.get_all_unemployed()

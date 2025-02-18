@@ -1,12 +1,98 @@
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar, Callable, Any, MutableMapping, Iterable, Optional
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import uuid
+import numpy as np
+from typing import Any, Iterable, TypeVar, Callable, Optional
 
-from utils.data import to_db_types, convert_value
-from utils.genericObjects import Agent
+from utils.data import convert_value, to_db_types
 
-if TYPE_CHECKING:
-    from utils.simulationObjects import Company, Individual, Product
+
+class Agent:
+    """A generic agent class to store information about an agent in the simulation.
+    Each agent should have access to the `SimulationAgents` object to interact with other agents.
+    Agent's stats attributes should be updated through the `AgentUpdates` object.
+
+    Attributes:
+        name (str): The UUID for the agent.
+        step (int): The current step of the simulation.
+        update (AgentUpdates): An object to store updates to the agent.
+        all_agents (SimulationAgents): An object to store all agents in the current simulation.
+    """
+    name: str
+    step: int = 0
+    update: 'AgentUpdates'
+    all_agents: 'SimulationAgents'
+    def __init__(self, all_agents: 'SimulationAgents'):
+        """
+        Initialize the agent with a UUID and the SimulationAgents object.
+        
+        Args:
+            all_agents (SimulationAgents): An object to store all agents in the current simulation.
+        """
+        self.name = str(uuid.uuid4())
+        self.all_agents = all_agents
+        self.all_agents.add(self)
+        self.update = AgentUpdates(all_agents)
+
+
+class FundsAgent(Agent):
+    """An agent that has funds and can transfer funds to other FundsAgent."""
+    def __init__(self, all_agents: 'SimulationAgents', starting_funds: int|float = 0, funds_precision: Callable = np.float64):
+        super().__init__(all_agents)
+
+        self._funds_precision = funds_precision
+        self.funds = starting_funds
+
+    def __setattr__(self, key, value):
+        if key == 'funds':
+            value = self._funds_precision(value)
+        super().__setattr__(key, value)
+
+    @staticmethod
+    def _warn_different_precision():
+        print('Warning: Transferring funds between different precisions!')
+
+    def set_funds(self, amount: int|float):
+        """Set funds to a value."""
+        self.update.attr_update(self, 'funds', amount)
+    
+    def modify_funds(self, amount: int|float):
+        """Modify funds by a value."""
+        self.update.attr_update(self, 'funds', self.funds + amount)
+    
+    def can_afford(self, amount: int|float) -> bool:
+        """Check if current funds is above a specified amount."""
+        return self.funds >= amount
+
+    def transfer_funds_to(self, target_object: 'FundsAgent', amount: int|float) -> bool:
+        """Transfer funds from current object to target object.
+        Returns True if the transfer was successful, False otherwise.
+        """
+        if self.funds < amount:
+            return False
+        
+        # Warning when transferring funds to an account with a different precision
+        if self._funds_precision != target_object._funds_precision:
+            self._warn_different_precision()
+        
+        self.modify_funds(-amount)
+        target_object.modify_funds(amount)
+        return True
+    
+    def transfer_funds_from(self, target_object: 'FundsAgent', amount: int|float) -> bool:
+        """Transfer funds from target object to current object.
+        Returns True if the transfer was successful, False otherwise.
+        """
+        if target_object.funds < amount:
+            return False
+        
+        # Warning when transferring funds to an account with a different precision
+        if self._funds_precision != target_object._funds_precision:
+            self._warn_different_precision()
+        
+        target_object.modify_funds(-amount)
+        self.modify_funds(amount)
+        return True
 
 
 @dataclass
@@ -63,8 +149,77 @@ class Reports:
 @dataclass
 class AgentLocation:
     """A dataclass to detonate the location of an agent in SimulationAgents."""
-    type: type['Agent']
+    type: type[Agent]
     index: int
+
+
+class SimulationAgents(dict[type[Agent], list[Agent]]):
+    """A special dictionary type to store agents in the simulation."""
+    AgentType = TypeVar('AgentType', bound=Agent)
+    def __init__(self, agents: Optional[Iterable[AgentType]] = None):
+        super().__init__()
+        if agents is None:
+            agents = []
+        for agent in agents:
+            self.add(agent)
+
+    def __getitem__(self, key: type[AgentType]) -> list[AgentType]:
+        try:
+            return super().__getitem__(key)  # type: ignore
+        except KeyError:
+            raise ValueError(f"Agent type {key.__name__} not found in the simulation")
+    
+    def __repr__(self) -> str:
+        items_str = ", ".join(f"{key.__name__}: {value}" for key, value in self.items())
+        return f"{{{items_str}}}"
+
+    def add(self, agent: AgentType | Iterable[AgentType]):
+        """Add a single agent or multiple agents to the simulation."""
+        if isinstance(agent, Agent):
+            agent = [agent]
+
+        for a in agent:
+            agent_list = self.get(type(a), [])
+            if a in agent_list:
+                raise ValueError(f"Agent {a} already in the simulation")
+            agent_list.append(a)
+            self[type(a)] = agent_list
+
+    def remove(self, agent: AgentType | Iterable[AgentType]):
+        """Remove a single agent or multiple agents from the simulation."""
+        if isinstance(agent, Agent):
+            agent = [agent]
+
+        for a in agent:
+            agent_list = self.get(type(a), [])
+            if agent not in agent_list:
+                raise ValueError(f"Agent {a} not in the simulation")
+            agent_list.remove(a)
+
+    def locate(self, location: AgentLocation) -> Agent:
+        """Get the agent from given location in the simulation."""
+        try:
+            return self[location.type][location.index]
+        except KeyError or IndexError:
+            raise ValueError(f"Could not find agent at: {location.type}[{location.index}]")
+
+    def get_location(self, agent: Agent) -> AgentLocation:
+        for agent_type, agent_list in self.items():
+            if agent in agent_list:
+                return AgentLocation(agent_type, agent_list.index(agent))
+        raise ValueError(f"Agent {agent} not found in the simulation")
+
+    def step_increase(self):
+        """Increase the step count of all agents in the simulation."""
+        for agent_list in self.values():
+            for agent in agent_list:
+                agent.step += 1
+
+    def clear_update_history(self):
+        """Clear the update history of all agents in the simulation."""
+        for agent_list in self.values():
+            [agent.update.update_history.clear() for agent in agent_list]
+
 
 class Update(ABC):
     """A dataclass to store updates to agents in the simulation."""
@@ -72,6 +227,7 @@ class Update(ABC):
     def apply(self, agents: dict[type['Agent'], list['Agent']]):
         """Apply this update to the simulation."""
         pass
+
 
 @dataclass
 class AttrUpdate(Update):
@@ -97,61 +253,6 @@ class AttrUpdate(Update):
             setattr(self.agent_location, self.attr, self.value)
 
 
-AgentType = TypeVar('AgentType', bound=Agent)
-class SimulationAgents(dict):
-    """A special dictionary type to store agents in the simulation."""
-    def __init__(self, agents: Optional[Iterable[AgentType]] = None):
-        super().__init__()
-        if agents is None:
-            agents = []
-        for agent in agents:
-            self.add(agent)
-
-    def __getitem__(self, key: type[AgentType]) -> list[AgentType]:
-        return super().__getitem__(key)
-
-    def add(self, agent: AgentType | Iterable[AgentType]):
-        """Add a single agent or multiple agents to the simulation."""
-        if isinstance(agent, Agent):
-            agent = [agent]
-
-        for a in agent:
-            agent_list = self.get(type(a), [])
-            if a in agent_list:
-                raise ValueError(f"Agent {a} already in the simulation")
-            agent_list.append(a)
-            self[type(a)] = agent_list
-
-    def remove(self, agent: AgentType | Iterable[AgentType]):
-        """Remove a single agent or multiple agents from the simulation."""
-        if isinstance(agent, Agent):
-            agent = [agent]
-
-        for a in agent:
-            agent_list = self.get(type(a), [])
-            if agent not in agent_list:
-                raise ValueError(f"Agent {a} not in the simulation")
-            agent_list.remove(a)
-    
-    def locate(self, location: AgentLocation) -> Agent:
-        """Get the agent from given location in the simulation."""
-        try:
-            return self[location.type][location.index]
-        except KeyError or IndexError:
-            raise ValueError(f"Could not find agent at: {location.type}[{location.index}]")
-
-    def get_location(self, agent: Agent) -> AgentLocation:
-        for agent_type, agent_list in self.items():
-            if agent in agent_list:
-                return AgentLocation(agent_type, agent_list.index(agent))
-        raise ValueError(f"Agent {agent} not found in the simulation")
-
-    def step_increase(self):
-        """Increase the step count of all agents in the simulation."""
-        for agent_list in self.values():
-            for agent in agent_list:
-                agent.step += 1
-
 @dataclass
 class AgentListUpdate(Update):
     """Modify an agent list attribute of an agent.
@@ -175,6 +276,7 @@ class AgentListUpdate(Update):
         elif self.mode == 'remove':
             getattr(agent, self.attr).remove(modifying_agent)
 
+
 @dataclass
 class AddAgent(Update):
     """Add an agent to the simulation.
@@ -185,12 +287,24 @@ class AddAgent(Update):
         kwargs: The keyword arguments for creating the agent.
     """
     agent_type: type['Agent']
-    args: tuple
-    kwargs: dict
+    args: Iterable[Any]
+    kwargs: dict[str, Any]
 
     def apply(self, agents: SimulationAgents):
-        agent = self.agent_type(*self.args, **self.kwargs)
+        args = []
+        for arg in self.args:
+            if isinstance(arg, AgentLocation):
+                args.append(agents.locate(arg))
+        kwargs = {}
+        for key, value in self.kwargs.items():
+            if isinstance(value, AgentLocation):
+                kwargs[key] = agents.locate(value)
+            else:
+                kwargs[key] = value
+
+        agent = self.agent_type(*args, **kwargs)
         agents[self.agent_type].append(agent)
+
 
 @dataclass
 class RemoveAgent(Update):
@@ -283,6 +397,27 @@ class AgentUpdates:
         update.apply(self.agents)
         self.update_history.append(update)
 
+    def add_agent(self, agent_type: type['Agent'], *args, **kwargs):
+        """Add an agent to the simulation.
+
+        Args:
+            agent_type: The type of agent to add.
+            *args: The arguments for creating the agent.
+            **kwargs: The keyword arguments for creating the agent.
+        """
+        # Convert any agents types in the arguments to their locations to make the update easier to transfer between processes
+        args = list(args)
+        for i, arg in enumerate(args):
+            if isinstance(arg, Agent):
+                args[i] = self.locate_agent(arg)
+        for key, value in kwargs.items():
+            if isinstance(value, Agent):
+                kwargs[key] = self.locate_agent(value)
+
+        update = AddAgent(agent_type, args, kwargs)
+        update.apply(self.agents)
+        self.update_history.append(update)
+
     def remove_agent(self, agent: 'Agent'):
         """Remove an agent from the simulation.
 
@@ -294,18 +429,15 @@ class AgentUpdates:
         update.apply(self.agents)
         self.update_history.append(update)
 
-    def add_agent(self, agent_type: type['Agent'], *args, **kwargs):
-        """Add an agent to the simulation.
 
-        Args:
-            agent_type: The type of agent to add.
-            *args: The arguments for creating the agent.
-            **kwargs: The keyword arguments for creating the agent.
-        """
-        update = AddAgent(agent_type, args, kwargs)
-        update.apply(self.agents)
-        self.update_history.append(update)
+if __name__ == '__main__':
+    agents = SimulationAgents()
+    funds1 = FundsAgent(agents, 100)
+    funds2 = FundsAgent(agents, 50)
+    print(agents)
 
-    def clear_history(self):
-        """Clear all updates."""
-        self.update_history.clear()
+    print(funds1.funds)
+    print(funds2.funds)
+    funds1.transfer_funds_from(funds2, 25)
+    print(funds1.funds)
+    print(funds2.funds)

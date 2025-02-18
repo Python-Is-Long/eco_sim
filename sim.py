@@ -1,21 +1,19 @@
-from dataclasses import dataclass
+import json
+import multiprocessing as mp
 import os
 import pickle
 import random
-from typing import List, Dict, Optional, Sequence, Callable, Any
-import multiprocessing as mp
+from dataclasses import dataclass
 from multiprocessing import shared_memory
+from typing import List, Dict, Optional, Sequence, Callable, Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
-import json
 
-from utils.genericObjects import Agent
+from utils.database import DatabaseInfo, SimDatabase
+from utils.simulationUtils import Agent, AgentLocation, Update, SimulationAgents
 from utils.simulationObjects import Config, Individual, Company, ProductGroup
 from utils.simulationObjects import IndividualReports, CompanyReports
-from utils.database import DatabaseInfo, SimDatabase
-from utils.simulationUtils import SimulationAgents, AgentLocation, Update
 
 
 @dataclass
@@ -140,6 +138,7 @@ class Economy:
         self.all_agents.step_increase()
 
         for agent_type, action in self.staging:
+            self.all_agents.clear_update_history()
             [action(agent) for agent in self.all_agents[agent_type]]
 
         # Collect statistics
@@ -154,6 +153,8 @@ class Economy:
         self.all_agents.step_increase()
         
         for agent_type, action in self.staging:
+            # Clear the update history of all agents
+            self.all_agents.clear_update_history()
             # Serialize the all agents and store them in a shared memory
             bytes_all_agents = pickle.dumps(self.all_agents)
             shm = shared_memory.SharedMemory(create=True, size=len(bytes_all_agents))
