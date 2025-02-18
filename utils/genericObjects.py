@@ -14,7 +14,7 @@ class Agent:
     """
     name: str
     step: int = 0
-    agent_updates: 'AgentUpdates'
+    update: 'AgentUpdates'
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = str(uuid.uuid4())
@@ -39,11 +39,11 @@ class FundsObject(Agent):
 
     def set_funds(self, amount: Union[int, float]):
         """Set funds to a value."""
-        self.agent_updates.attr_update(self, 'funds', amount)
+        self.update.attr_update(self, 'funds', amount)
     
     def modify_funds(self, amount: Union[int, float]):
         """Modify funds by a value."""
-        self.agent_updates.attr_update(self, 'funds', self.funds + amount)
+        self.update.attr_update(self, 'funds', self.funds + amount)
     
     def can_afford(self, amount: Union[int, float]) -> bool:
         """Check if current funds is above a specified amount."""

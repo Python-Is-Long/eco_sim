@@ -37,7 +37,7 @@ def tasking(task_queue: mp.Queue, return_queue: mp.Queue):
             current_shm_name = task.shm_name
         agent = all_agents.locate(task.agent_location)
         task.action(agent)
-        return_queue.put(agent.agent_updates.updates)
+        return_queue.put(agent.update.update_history)
 
 
 class Economy:
@@ -76,6 +76,10 @@ class Economy:
             (Individual, Individual.find_opportunities),  # Individuals find jobs or create new company
             (Company, Company.adjust_workforce),  # Adjust workforce for companies
         ]
+        
+        # Collect initial statistics
+        self.collect_statistics()
+        self.reports()
 
     def _create_individuals(self, num_individuals: int):
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)

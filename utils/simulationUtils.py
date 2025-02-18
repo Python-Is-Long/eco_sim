@@ -211,7 +211,7 @@ class AgentUpdates:
     Attributes:
         updates: A dictionary with the agent location (agent type and index) as key and the function to update the agent as value.
     """
-    updates: list[Update]
+    update_history: list[Update]
 
     def __init__(self, agents: SimulationAgents):
         from utils.simulationObjects import Company, Individual, Product
@@ -221,7 +221,7 @@ class AgentUpdates:
             Product: 'products',
         }
         self.agents = agents
-        self.updates = []
+        self.update_history = []
 
     def locate_agent(self, agent: 'Agent') -> AgentLocation:
         """Locate an agent in the simulation.
@@ -252,11 +252,11 @@ class AgentUpdates:
         update = AttrUpdate(location, attr, value, is_agent)
         update.apply(self.agents)
         # Remove previous updates to the same attribute of the same agent if they exist
-        for u in self.updates:
+        for u in self.update_history:
             if isinstance(u, AttrUpdate) and u.agent_location == location and u.attr == attr:
-                self.updates.remove(u)
+                self.update_history.remove(u)
                 break
-        self.updates.append(update)
+        self.update_history.append(update)
 
     def agent_list_update(self, agent: 'Agent', attr: str, mode: str, modifying_agent: 'Agent'):
         """Update an agent list attribute of an agent. Either append or remove an agent from the list.
@@ -281,7 +281,7 @@ class AgentUpdates:
         modifying_agent_location = self.locate_agent(modifying_agent)
         update = AgentListUpdate(location, attr, mode, modifying_agent_location)
         update.apply(self.agents)
-        self.updates.append(update)
+        self.update_history.append(update)
 
     def remove_agent(self, agent: 'Agent'):
         """Remove an agent from the simulation.
@@ -292,7 +292,7 @@ class AgentUpdates:
         location = self.locate_agent(agent)
         update = RemoveAgent(location)
         update.apply(self.agents)
-        self.updates.append(update)
+        self.update_history.append(update)
 
     def add_agent(self, agent_type: type['Agent'], *args, **kwargs):
         """Add an agent to the simulation.
@@ -304,8 +304,8 @@ class AgentUpdates:
         """
         update = AddAgent(agent_type, args, kwargs)
         update.apply(self.agents)
-        self.updates.append(update)
+        self.update_history.append(update)
 
-    def clear(self):
+    def clear_history(self):
         """Clear all updates."""
-        self.updates.clear()
+        self.update_history.clear()

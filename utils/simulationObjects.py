@@ -170,7 +170,7 @@ class Individual(FundsObject):
             funds_precision=configuration.FUNDS_PRECISION
         )
 
-        self.agent_updates = AgentUpdates(all_agents)
+        self.update = AgentUpdates(all_agents)
         self.talent = talent
         self.unemployed_state = 0
         self.employer: Optional[Company] = None
@@ -225,7 +225,7 @@ class Individual(FundsObject):
 
     # Stage method
     def find_opportunities(self) -> bool:
-        self.agent_updates.clear()
+        self.update.clear_history()
         # Find jobs if the individual is not employed
         if self.employer is None:
             # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
@@ -235,7 +235,7 @@ class Individual(FundsObject):
                 if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[self.unemployed_state]):
                     return True
             if self.unemployed_state < len(ego_value) - 1:
-                self.agent_updates.attr_update(self, 'unemployed_state', self.unemployed_state + 1)
+                self.update.attr_update(self, 'unemployed_state', self.unemployed_state + 1)
 
         # Start new company
         be_entrepreneur = self.choose_niche(niches=self.config.POSSIBLE_MARKETS)
@@ -243,7 +243,7 @@ class Individual(FundsObject):
         if self.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < self.get_market_potential() and be_entrepreneur:
             initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
             # Add this new company to a queue to be created by the main thread
-            self.agent_updates.add_agent(Company, owner=self, initial_funds=initial_funds)
+            self.update.add_agent(Company, owner=self, initial_funds=initial_funds)
         return True
 
     def estimate_runout(self) -> Optional[int]:
@@ -257,11 +257,11 @@ class Individual(FundsObject):
 
     # Stage method
     def purchase_product(self) -> bool:
-        self.agent_updates.clear()
+        self.update.clear_history()
         target_product = self.decide_purchase(ProductGroup(self.all_agents[Product]))
         if target_product is not None:
             self.make_purchase(self.all_agents[Company], target_product)
-            self.agent_updates.attr_update(self, 'expenses', target_product.price)
+            self.update.attr_update(self, 'expenses', target_product.price)
         return True
 
     def report(self):
@@ -313,10 +313,10 @@ class Company(FundsObject):
             starting_funds=initial_funds,
             funds_precision=self.config.FUNDS_PRECISION
         )
-        self.agent_updates = AgentUpdates(all_agents)
+        self.update = AgentUpdates(all_agents)
         self.set_funds(initial_funds)
         self.owner = owner
-        self.agent_updates.agent_list_update(owner, 'owning_company', 'append', self)
+        self.update.agent_list_update(owner, 'owning_company', 'append', self)
 
         self.employees: List[Individual] = []
         self.product = Product(self)
@@ -329,7 +329,7 @@ class Company(FundsObject):
 
     def __setattr__(self, key, value):
         if key == "funds" and hasattr(self, 'funds') and hasattr(self, 'agent_updates') and value > self.funds:
-            self.agent_updates.attr_update(self,'revenue', value - self.funds)
+            self.update.attr_update(self,'revenue', value - self.funds)
         super().__setattr__(key, value)
 
     @property
@@ -384,18 +384,18 @@ class Company(FundsObject):
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
         #TODO: allow company to grow indefinitely
         if self.funds >= salary and len(self.employees) < self.max_employees:
-            self.agent_updates.attr_update(candidate, 'employer', self)
-            self.agent_updates.attr_update(candidate, 'salary', salary)
-            self.agent_updates.attr_update(candidate, 'unemployed_state', 0)
-            self.agent_updates.agent_list_update(self, 'employees', 'append', candidate)
+            self.update.attr_update(candidate, 'employer', self)
+            self.update.attr_update(candidate, 'salary', salary)
+            self.update.attr_update(candidate, 'unemployed_state', 0)
+            self.update.agent_list_update(self, 'employees', 'append', candidate)
             return True
         return False
 
     def fire_employee(self, employee: Individual):
         if employee in self.employees:
             self.employees.remove(employee)
-            self.agent_updates.attr_update(employee, 'employer', None)
-            self.agent_updates.attr_update(employee, 'salary', 0.0)
+            self.update.attr_update(employee, 'employer', None)
+            self.update.attr_update(employee, 'salary', 0.0)
 
     # fix zero raw_material issue
     def find_raw_material(self, products: Iterable[Product]):
@@ -406,14 +406,14 @@ class Company(FundsObject):
             return
 
         if self.product.quality == 1 or not self.raw_materials:
-            self.agent_updates.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
+            self.update.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
         if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON) * 10:
-            self.agent_updates.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
+            self.update.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
         if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON) / 10:
-            self.agent_updates.agent_list_update(self, 'raw_materials', 'remove', random.choice(self.raw_materials))
+            self.update.agent_list_update(self, 'raw_materials', 'remove', random.choice(self.raw_materials))
 
     def check_bankruptcy(self) -> bool:
         # TODO: if a company has no worker for over x step, bankrupt
@@ -434,11 +434,11 @@ class Company(FundsObject):
 
     # Stage method
     def update_product(self) -> bool:
-        self.agent_updates.clear()
+        self.update.clear_history()
         # Update company product prices and quality and reset revenue
         self.remove_raw_material()  # see if remove raw_material at this step
         self.update_product_attributes(population=len(self.all_agents[Individual]), company_count=len(self.all_agents[Company]))
-        self.agent_updates.attr_update(self, 'revenue', 0)
+        self.update.attr_update(self, 'revenue', 0)
 
         # see if able to find a raw_material at this step
         self.find_raw_material(ProductGroup(self.all_agents[Product]))
@@ -446,14 +446,14 @@ class Company(FundsObject):
 
     # Stage method
     def do_finance(self) -> bool:
-        self.agent_updates.clear()
+        self.update.clear_history()
         # Pay dividends from profit to owner
         self.transfer_funds_to(self.owner, self.dividend)
         # Check for bankruptcy
         if self.check_bankruptcy():
             self.declare_bankruptcy()
             # Add this company to a queue to be removed by the main thread
-            self.agent_updates.remove_agent(self)
+            self.update.remove_agent(self)
             return False
 
         # Pays employees salary
@@ -462,7 +462,7 @@ class Company(FundsObject):
 
     # Stage method
     def adjust_workforce(self) -> bool:
-        self.agent_updates.clear()
+        self.update.clear_history()
         if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
             # Hire new employees
             unemployed = self.get_all_unemployed()
