@@ -107,6 +107,7 @@ class Economy:
                     initial_salary = 50 + employee.talent * 0.5
                     if company.hire_employee(employee, initial_salary):
                         available_workers.remove(employee)
+
     def start_processes(self):
         for _ in range(mp.cpu_count()):
             worker_process = mp.Process(target=tasking, args=(self.task_queue, self.return_queue))
@@ -134,26 +135,8 @@ class Economy:
         self.step += 1
         self.all_agents.step_increase()
 
-        for company in self.all_agents[Company]:
-            company.update_product()
-
-        # Individuals spend money
-        for individual in self.all_agents[Individual]:
-            individual.purchase_product()
-
-        # Company checks for bankruptcy and pays dividends then pays salaries
-        for company in self.all_agents[Company]:
-            company.do_finance()
-        # self.handle_company_removal()
-
-        # Individuals find jobs or create new company
-        for individual in self.all_agents[Individual]:
-            individual.find_opportunities()
-        # self.handle_company_creation()
-
-        # Adjust workforce for companies
-        for company in self.all_agents[Company]:
-            company.adjust_workforce()
+        for agent_type, action in self.staging:
+            [action(agent) for agent in self.all_agents[agent_type]]
 
         # Collect statistics
         self.collect_statistics()
@@ -304,6 +287,7 @@ def run_simulation(
         num_steps: int = 100,
         state_pickle_path: str = "economy_simulation.pkl",
         resume_state: bool = False,
+        multiprocessing: bool = False,
 ) -> Economy:
     # Load simulation state (optional)
     if resume_state and os.path.exists(state_pickle_path):
@@ -322,14 +306,12 @@ def run_simulation(
             config=config,
         )
     for _ in tqdm(range(num_steps - economy.step), desc="Simulating economy"):
-        # economy.simulate_step()
-        economy.simulate_step_mp()
-        # economy.all_companies[0].print_statistics()
+        economy.simulate_step_mp() if multiprocessing else economy.simulate_step()
         economy.stats.save_stats("simulation_stats.pkl")
 
         # Save simulation state
         # economy.save_state("economy_simulation.pkl")
-    economy.end_processes()
+    economy.end_processes() if multiprocessing else None
     return economy
 
 
@@ -410,11 +392,12 @@ if __name__ == "__main__":
 
     # Run simulation
     economy = run_simulation(
-        num_individuals=1000,
-        num_companies=500,
+        num_individuals=100,
+        num_companies=50,
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
+        multiprocessing=False,
     )
 
     # Load simulation state (optional)

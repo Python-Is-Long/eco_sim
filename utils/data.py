@@ -59,7 +59,7 @@ def to_db_types(tp: Any) -> str:
     raise ValueError(f"Unsupported type: {tp}")
 
 
-def convert_value(value, target_type):
+def convert_value(value, target_type) -> Any:
     origin = get_origin(target_type)
     args = get_args(target_type)
 
