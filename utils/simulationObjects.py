@@ -1,6 +1,6 @@
 import random
 from dataclasses import dataclass, fields
-from typing import List, Optional, Union, Iterable, Callable, Set, Any
+from typing import List, Optional, Sequence, Union, Iterable, Callable, Set, Any
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -32,7 +32,7 @@ class Config:
     # Entrepreneurship settings
     MAX_SKILLS = 3
     STARTUP_COST_FACTOR: float = 0.5  # Fraction of wealth used to start a company
-    MIN_WEALTH_FOR_STARTUP: Union[int, float] = 100000  # Minimum wealth to start a company
+    MIN_WEALTH_FOR_STARTUP: Union[int, float] = 10000  # Minimum wealth to start a company
     POSSIBLE_MARKETS = list(range(0, 10))
 
     # Math
@@ -66,6 +66,9 @@ class NicheMarket:
 
 
 class Product(Agent):
+    """A product that can be produced by a company."""
+    materials: List['Product']
+    
     def __init__(
         self,
         all_agents: SimulationAgents,
@@ -79,14 +82,18 @@ class Product(Agent):
         self.quality = quality
         self.price = price
         self.company = company.name
-        self.materials = ProductGroup(materials if materials else [])
+        self.materials = list(materials) if materials else []
 
     def __repr__(self):
         return f"{__class__.__name__}(name={self.name}, price={self.price}, quality={self.quality})"
 
     @property
     def cost(self) -> float:
-        return self.materials.total_price
+        return self.material_group.total_price
+
+    @property
+    def material_group(self) -> 'ProductGroup':
+        return ProductGroup(self.materials)
 
     def get_materials_recursive(self, known_child=None):
         if known_child is None:
@@ -104,6 +111,7 @@ class ProductGroup(tuple):
     """A tuple of products with additional methods for managing products."""
 
     def __new__(cls, products: Iterable[Product]):
+        products = tuple(products)
         # Check if all elements is a valid product
         if not all(isinstance(p, Product) for p in products):
             raise ValueError("All elements in the product group must be of type Product.")
@@ -215,7 +223,7 @@ class Individual(FundsAgent):
         if sum_product_scores == 0:
             return None
 
-        chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
+        chosen_product: Product = np.random.choice(a=products, p=product_scores / sum_product_scores)
         return chosen_product
 
     def get_market_potential(self):
@@ -223,7 +231,7 @@ class Individual(FundsAgent):
         return np.log10(len(self.all_agents[Individual])) / len(self.all_agents[Company])
 
     # Stage method
-    def find_opportunities(self) -> bool:
+    def find_opportunities(self):
         # Find jobs if the individual is not employed
         if self.employer is None:
             # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
@@ -244,8 +252,7 @@ class Individual(FundsAgent):
         if self.funds > self.config.MIN_WEALTH_FOR_STARTUP and random.random() < self.get_market_potential() and be_entrepreneur:
             initial_funds = self.funds * self.config.STARTUP_COST_FACTOR
             # Add this new company to a queue to be created by the main thread
-            self.update.add_agent(Company, owner=self, initial_funds=initial_funds)
-        return True
+            self.update.request_add_agent(Company, owner=self, initial_funds=initial_funds)
 
     def estimate_runout(self) -> Optional[int]:
         # Estimate how many time steps until the individual runs out of funds
@@ -299,12 +306,14 @@ class CompanyReports(Reports):
 class Company(FundsAgent):
     all_agents: SimulationAgents
     owner: Individual
+    bankruptcy = False
     def __init__(
         self,
         all_agents: SimulationAgents,
         owner: Individual,
         initial_funds: float = 0,
-        configuration: Config = Config()
+        configuration: Config = Config(),
+        funds_from_owner: bool = False,
     ):
         self.config = configuration
         
@@ -314,16 +323,17 @@ class Company(FundsAgent):
             funds_precision=self.config.FUNDS_PRECISION
         )
         self.update = AgentUpdates(all_agents)
-        self.set_funds(initial_funds)
         self.owner = owner
         self.update.agent_list_update(owner, 'owning_company', 'append', self)
+        if funds_from_owner:
+            self.transfer_funds_from(owner, initial_funds)
+        else:
+            self.set_funds(initial_funds)
 
         self.employees: List[Individual] = []
         self.product = Product(self.all_agents, company=self)
         self.revenue = self.config.FUNDS_PRECISION(0)
-        self.raw_materials: List[Product] = []
         self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
-        self.bankruptcy = False
         self.profit_margin = 0.2  # (1 + profit margin) * price * sales = revenue  TODO: smart margin
 
     def __setattr__(self, key, value):
@@ -337,7 +347,7 @@ class Company(FundsAgent):
 
     @property
     def total_material_cost(self):
-        return sum(product.price for product in self.raw_materials)
+        return sum(product.price for product in self.product.materials)
 
     @property
     def costs(self):
@@ -350,6 +360,11 @@ class Company(FundsAgent):
     @property
     def dividend(self):
         return self.profit * self.config.DIVIDEND_RATE if self.profit > 0 else 0
+    
+    @property
+    def going_bankrupt(self) -> bool:
+        """Whether the company is going bankrupt at this step based on funds and costs."""
+        return self.funds < self.costs
 
     def calculate_product_quality(self) -> float:
         if not self.employees:
@@ -362,8 +377,8 @@ class Company(FundsAgent):
 
         # Additional quality from raw_materials
         base_quality_raw_material = 0
-        if len(self.raw_materials) > 1:
-            base_quality_raw_material = np.median(product.quality for product in self.raw_materials)
+        if len(self.product.materials) > 1:
+            base_quality_raw_material = np.median(product.quality for product in self.product.materials)
         return base_quality_employee + base_quality_raw_material
 
     @staticmethod
@@ -392,9 +407,11 @@ class Company(FundsAgent):
 
     def fire_employee(self, employee: Individual):
         if employee in self.employees:
-            self.employees.remove(employee)
+            self.update.agent_list_update(self, 'employees', 'remove', employee)
             self.update.attr_update(employee, 'employer', None)
             self.update.attr_update(employee, 'salary', 0.0)
+        else:
+            raise ValueError(f"Attempted firing {employee.name} from company {self.name}, but they are not an employee.")
 
     # fix zero raw_material issue
     def find_raw_material(self, products: Iterable[Product]):
@@ -404,23 +421,31 @@ class Company(FundsAgent):
         if not potential_materials:
             return
 
-        if self.product.quality == 1 or not self.raw_materials:
-            self.update.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
-        if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + self.config.EPSILON) * 10:
-            self.update.agent_list_update(self, 'raw_materials', 'append', random.choice(potential_materials))
+        if self.product.quality == 1 or not self.product.materials:
+            self.update.agent_list_update(self.product, 'materials', 'append', random.choice(potential_materials))
+        if len(self.product.materials) > 0 and random.random() < np.log(1 / len(self.product.materials) + self.config.EPSILON) * 10:
+            self.update.agent_list_update(self.product, 'materials', 'append', random.choice(potential_materials))
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
-        if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON) / 10:
-            self.update.agent_list_update(self, 'raw_materials', 'remove', random.choice(self.raw_materials))
+        if len(self.product.materials) > 1 and random.random() < 1 / np.log10(self.product.quality + self.config.EPSILON) / 10:
+            self.update.agent_list_update(self.product, 'materials', 'remove', random.choice(self.product.materials))
 
-    def check_bankruptcy(self) -> bool:
-        # TODO: if a company has no worker for over x step, bankrupt
-        if self.funds < self.costs and len(self.raw_materials) > 0:
-            # Reduce product cost before firing employees
-            self.raw_materials.remove(sorted(list(self.raw_materials), key=lambda x: x.price, reverse=True)[0])
-
-        return self.funds < self.costs
+    def adjust_workforce(self):
+        # TODO: Redo hiring process, make the companies put out job offers for individuals to apply
+        
+        # if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
+        #     # Hire new employees
+        #     unemployed = self.get_all_unemployed()
+        #     if unemployed:
+        #         new_employee = max(unemployed, key=lambda x: x.talent)
+        #         self.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
+        if self.revenue < self.costs:
+            # Fire employees
+            if self.employees:
+                employee_to_fire = random.choice(self.employees)
+                self.fire_employee(employee_to_fire)
+            # TODO: add a bankruptcy index every time when there's no worker to fire
 
     def declare_bankruptcy(self):
         # Fire all employees
@@ -432,7 +457,7 @@ class Company(FundsAgent):
         # self.all_agents.stats.num_bankruptcies += 1
 
     # Stage method
-    def update_product(self) -> bool:
+    def update_product(self):
         # Update company product prices and quality and reset revenue
         self.remove_raw_material()  # see if remove raw_material at this step
         self.update_product_attributes(population=len(self.all_agents[Individual]), company_count=len(self.all_agents[Company]))
@@ -440,38 +465,30 @@ class Company(FundsAgent):
 
         # see if able to find a raw_material at this step
         self.find_raw_material(ProductGroup(self.all_agents[Product]))
-        return True
 
     # Stage method
-    def do_finance(self) -> bool:
+    def do_finance(self):
         # Pay dividends from profit to owner
         self.transfer_funds_to(self.owner, self.dividend)
+        
+        # Reduce material costs before firing employees
+        if self.going_bankrupt and len(self.product.materials) > 0:
+            highest_cost_material = max(self.product.materials, key=lambda x: x.price)
+            self.update.agent_list_update(self.product, 'materials', 'remove', highest_cost_material)
+        
+        # Fire employees
+        self.adjust_workforce()
+        
         # Check for bankruptcy
-        if self.check_bankruptcy():
+        # TODO: if a company has no worker for over x step, bankrupt
+        if self.going_bankrupt:
             self.declare_bankruptcy()
-            # Add this company to a queue to be removed by the main thread
-            self.update.remove_agent(self)
-            return False
+            # Make this company to be removed at the end of current stage
+            self.update.request_remove_agent(self)
+            return
 
         # Pays employees salary
-        [e.transfer_funds_from(self, e.salary) for e in self.employees]
-        return True
-
-    # Stage method
-    def adjust_workforce(self) -> bool:
-        if self.revenue > self.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
-            # Hire new employees
-            unemployed = self.get_all_unemployed()
-            if unemployed:
-                new_employee = max(unemployed, key=lambda x: x.talent)
-                self.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
-        elif self.revenue < self.costs:
-            # Fire employees
-            if self.employees:
-                employee_to_fire = random.choice(self.employees)
-                self.fire_employee(employee_to_fire)
-            # TODO: add a bankruptcy index every time when there's no worker to fire
-        return True
+        [e.transfer_funds_to(e, e.salary) for e in self.employees]
 
     def report(self):
         return CompanyReports(
@@ -494,7 +511,7 @@ class Company(FundsAgent):
             f"Owner: {self.owner.name}, Funds: {self.funds:.2f}, "
             f"Employees: {len(self.employees)}/{self.max_employees}, "
             f"Total Salary: {sum(emp.salary for emp in self.employees):.2f}, "
-            f"Raw Materials: {len(self.raw_materials)}, "
+            f"Raw Materials: {len(self.product.materials)}, "
             f"Product Quality: {self.product.quality:.2f}, Product Price: {self.product.price:.2f}, "
             f"Costs: {self.costs:.2f}, Revenue: {self.revenue:.2f}, Dividends: {self.dividend:.2f}, "
             f"Bankruptcy: {self.bankruptcy}"
@@ -503,13 +520,17 @@ class Company(FundsAgent):
 
 
 if __name__ == "__main__":
+    all_agents = SimulationAgents()
+    individual = Individual(all_agents, 100, 1000, {1, 2, 3}, 0.5)
+    company1 = Company(all_agents, individual, 1000)
+    company2 = Company(all_agents, individual, 1000)
     # Test products get child materials
-    product1 = Product(None, 1, 1)
-    product2 = Product(None, 2, 2)
-    product1.materials = ProductGroup([product2])
-    product2.materials = ProductGroup([product1])
-    product3 = Product(None, 3, 3)
-    product4 = Product(None, 4, 4, [product3])
+    product1 = Product(all_agents, company1, price=1, quality=1)
+    product2 = Product(all_agents, company2, price=1, quality=1)
+    product1.materials = [product2]
+    product2.materials = [product1]
+    # product3 = Product(None, 3, 3)
+    # product4 = Product(None, 4, 4, [product3])
 
     print(product1.get_materials_recursive())
-    print(product4.get_materials_recursive())
+    # print(product4.get_materials_recursive())

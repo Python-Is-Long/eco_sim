@@ -11,8 +11,8 @@ import numpy as np
 from tqdm import tqdm
 
 from utils.database import DatabaseInfo, SimDatabase
-from utils.simulationUtils import Agent, AgentLocation, Update, SimulationAgents
-from utils.simulationObjects import Config, Individual, Company, ProductGroup
+from utils.simulationUtils import Agent, AgentLocation, SimulationAgents, Update, AddAgent, RemoveAgent, UpdateHistory
+from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
 from utils.simulationObjects import IndividualReports, CompanyReports
 
 
@@ -35,14 +35,14 @@ def tasking(task_queue: mp.Queue, return_queue: mp.Queue):
             current_shm_name = task.shm_name
         agent = all_agents.locate(task.agent_location)
         task.action(agent)
-        return_queue.put(agent.update.update_history)
+        return_queue.put(agent.update.history)
 
 
 class Economy:
     step: int = 0
     creating_companies: List
     removing_companies: List[Company]
-    staging: Sequence[tuple[type[Agent], Callable[..., bool]]]
+    staging: Sequence[tuple[type[Agent], Callable[[Any], Any]]]
     workers: List[mp.Process]
 
     def __init__(self, db_info: Optional[DatabaseInfo] = None, config: Config = Config()):
@@ -66,18 +66,18 @@ class Economy:
         if db_info:
             self.db = SimDatabase(db_info, self.report_types)
             self.db.create_database('ECOSIM')
-
+        
         self.staging = [
             (Company, Company.update_product),  # Update company product prices and quality and find new materials
             (Individual, Individual.purchase_product),  # Individuals spend money
-            (Company, Company.do_finance),  # Company checks for bankruptcy and pays dividends then pays salaries
+            (Company, Company.do_finance),  # Company pays dividends, adjusts workforces, checks for bankruptcy then pays salaries
             (Individual, Individual.find_opportunities),  # Individuals find jobs or create new company
-            (Company, Company.adjust_workforce),  # Adjust workforce for companies
         ]
-        
+
         # Collect initial statistics
         self.collect_statistics()
         self.reports()
+        self.all_agents.clear_update_history()
 
     def _create_individuals(self, num_individuals: int):
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
@@ -139,7 +139,12 @@ class Economy:
 
         for agent_type, action in self.staging:
             self.all_agents.clear_update_history()
-            [action(agent) for agent in self.all_agents[agent_type]]
+            modifying_updates = []
+            for agent in self.all_agents[agent_type]:
+                action(agent)
+                # Normal updates are applied already by the AgentUpdates class
+                modifying_updates += agent.update.history.modifying_updates
+            [u.apply(self.all_agents) for u in modifying_updates]
 
         # Collect statistics
         self.collect_statistics()
@@ -153,8 +158,6 @@ class Economy:
         self.all_agents.step_increase()
         
         for agent_type, action in self.staging:
-            # Clear the update history of all agents
-            self.all_agents.clear_update_history()
             # Serialize the all agents and store them in a shared memory
             bytes_all_agents = pickle.dumps(self.all_agents)
             shm = shared_memory.SharedMemory(create=True, size=len(bytes_all_agents))
@@ -171,10 +174,15 @@ class Economy:
                 self.task_queue.put(task)
             
             # Process all the results returned by subprocesses
+            modifying_updates = []
             for i in range(stage_agent_count):
-                updates: list[Update] = self.return_queue.get()
-                # Apply the updates returned by the subprocess in the main process
-                [u.apply(self.all_agents) for u in updates]
+                updates: UpdateHistory = self.return_queue.get()
+                # Apply the normal updates returned by the subprocess in the main process
+                [u.apply(self.all_agents) for u in updates.normal_updates]
+                modifying_updates += updates.modifying_updates
+
+            # Apply the modifying updates which are updates that creates or removes agents
+            [u.apply(self.all_agents) for u in modifying_updates]
 
             # Close the shared memory
             shm.close()
@@ -225,7 +233,7 @@ class Economy:
         if self.all_agents[Company]:
             self.stats.avg_product_quality.append(np.mean([c.product.quality for c in self.all_agents[Company]]))
             self.stats.avg_product_price.append(np.mean([c.product.price for c in self.all_agents[Company]]))
-            self.stats.avg_company_raw_materials.append(np.mean([len(c.raw_materials) for c in self.all_agents[Company]]))
+            self.stats.avg_company_raw_materials.append(np.mean([len(c.materials) for c in self.all_agents[Product]]))
             self.stats.avg_company_employees.append(np.mean([len(c.employees) for c in self.all_agents[Company]]))
         else:
             self.stats.avg_product_quality.append(0)
@@ -394,6 +402,7 @@ def print_summary(economy: Economy):
 if __name__ == "__main__":
     np.random.seed(42)
     random.seed(42)
+    Update.trace_update = True
 
     # Run simulation
     economy = run_simulation(
@@ -402,7 +411,7 @@ if __name__ == "__main__":
         num_steps=100,
         state_pickle_path="economy_simulation.pkl",
         resume_state=False,
-        multiprocessing=False,
+        multiprocessing=True,
     )
 
     # Load simulation state (optional)
