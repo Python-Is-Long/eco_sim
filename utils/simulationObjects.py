@@ -1,9 +1,10 @@
 import random
-from typing import List, Optional, Union, Iterable, Callable
+from typing import List, Optional, Union, Iterable, Callable, Tuple
 
 import numpy as np
 
 from utils.genericObjects import NamedObject, FundsObject
+from utils import calculation
 
 
 class Config:
@@ -32,6 +33,13 @@ class Config:
 
     # Math
     EPSILON = 1e-6
+
+    # SOFTMAX TEMPERATURE
+    FIND_RAW_MATS_TEMP: int = 55
+    REMOVE_RAW_MATS_TEMP: int = 30
+    DECIDE_PURCHASE_TEMP: int = 10
+    SELECT_CANDIDATE_TEMP: int = 30
+    SELECT_COMPANY_TEMP: int = 30
 
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
@@ -114,7 +122,6 @@ class Individual(FundsObject, NamedObject):
             funds_precision=configuration.FUNDS_PRECISION
         )
         self.talent = talent
-        self.unemployed_state = 0
         self.employer: Optional[Company] = None
         self.salary = configuration.FUNDS_PRECISION(0)
         self.owning_company: list[Company] = []
@@ -138,29 +145,40 @@ class Individual(FundsObject, NamedObject):
     def decide_purchase(self, products: ProductGroup) -> Optional[Product]:
         if not products:
             return None
-
-        product_scores = np.array([self.score_product(p) for p in products])
-        sum_product_scores = product_scores.sum()
-
-        if sum_product_scores == 0:
-            return None
-
-        chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
+        product_probabilities = calculation.calculate_choice_probabilities([self.score_product(p) for p in products], temperature=Config.DECIDE_PURCHASE_TEMP)
+        chosen_product: Product = np.random.choice(products, p=product_probabilities)
         return chosen_product
 
-    def find_job(self, companies: List['Company'], unemployed_state):
-        # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
-        ego_value = [1, 0.95, 0.9, 0.85, 0.8, 0.75]
-        # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
-        if self.employer is None:
-            for company in companies:
-                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[unemployed_state]):
-                    break
+    def calculate_ego_value(self, runout_time= None):
+        # logistic curve from 1.5 to 0.5, when 1 step away from runout, ego value is close to 0.5
+        if runout_time is None:
+            return 1.5
+        else:
+            return 1 + 0.5 / (1 + np.exp(-0.1 * (runout_time / 2)))
 
-    def estimate_runout(self) -> Optional[int]:
+    def select_company(self, companies: List['Company'] ):
+        company_pool = [c.expected_salary_range for c in companies if  c.expected_salary_range[0] < self.expected_salary < c.expected_salary_range[1]]
+        company_CBA = [c.expected_salary_range[0] / self.talent for c in company_pool]
+        company_probabilities = calculation.calculate_choice_probabilities(company_CBA, temperature=Config.SELECT_COMPANY_TEMP)
+        self.chosen_companies = np.random.choice(companies, 5, p=company_probabilities)
+
+    def need_job(self, ego_value):
+        if self.employer is None or self.employer.bankruptcy is True:
+            self.expected_salary = self.talent * self.config.SALARY_FACTOR * ego_value
+            return True
+        else:
+            self.expected_salary = self.salary
+            return False
+
+    def estimate_runout(self, products: ProductGroup) -> Optional[int]:
         # Estimate how many time steps until the individual runs out of funds
-        est = self.funds / (self.income - self.expenses)
-        return int(est) if est > 0 else None
+        sorted_products = sorted(products, key=lambda p: p.price)
+        n_cheapest = int(len(sorted_products) * 0.1)
+        cheapest_x_percent = sorted_products[:n_cheapest]
+        average_price = sum(p.price for p in cheapest_x_percent) / len(cheapest_x_percent)
+        est_hard = self.funds / (self.income - self.expenses)
+        est_soft = self.funds / (self.income - average_price)
+        return int(min(est_hard,est_soft)) if int(min(est_hard,est_soft)) > 0 else None
 
     def self_evaluate(self, products: List[Product]) -> float:
         # Evaluation based on how much funds the individual has and the product that they are purchasing
@@ -185,7 +203,9 @@ class Company(FundsObject, NamedObject):
         self.raw_materials: List[Product] = []
         self.max_employees = random.randint(self.config.MIN_COMPANY_SIZE, self.config.MAX_COMPANY_SIZE)
         self.bankruptcy = False
+        self.bankruptcy_index = 0
         self.profit_margin = 0.2  # (1 + profit margin) * price * sales = revenue  TODO: smart margin
+        self.expected_salary_range: Optional[Tuple[float, float]] = None
 
     @property
     def total_salary(self):
@@ -232,9 +252,24 @@ class Company(FundsObject, NamedObject):
         self.product.price = (max(1, self.costs * (1 + self.profit_margin)) /
                               self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
 
+    def need_to_hire(self, median_salary):
+        # a company should consider adding employee when revenue is enough to cover 2 steps of the median_salary of the new employee
+        if self.funds >= sum(e.salary for e in self.employees):
+            if self.revenue > median_salary*2:
+                employee_salary = [e.salary for e in self.employees]
+                employee_median_salary = np.median(e.salary for e in self.employees)
+                self.expected_salary_range = (employee_median_salary - np.std(employee_salary), employee_median_salary + np.std(employee_salary))
+                return True
+            else: return False
+        else: return False
+
+    def select_candidate(self, job_seekers):
+        candidate_CBA = [s.talent / s.expected_salary for s in job_seekers]
+        candidate_probabilities = calculation.calculate_choice_probabilities(candidate_CBA, temperature=Config.SELECT_CANDIDATE_TEMP)
+        self.candidates = np.random.choice(job_seekers, 10, p=candidate_probabilities)
+
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
-        #TODO: allow company to grow indefinitely
-        if self.funds >= salary and len(self.employees) < self.max_employees:
+        if self.funds >= salary and len(self.employees):
             candidate.employer = self
             candidate.salary = salary
             self.employees.append(candidate)
@@ -252,19 +287,24 @@ class Company(FundsObject, NamedObject):
     def find_raw_material(self, products: List[Product]):
         # Get all products that does not have this company's product as a child material
         potential_materials = [p for p in products if self.product not in p.get_materials_recursive()]
-
+        materials_CBA = [p.quality/p.price for p in potential_materials]
+        raw_material_probabilities = calculation.calculate_choice_probabilities(materials_CBA, temperature=Config.FIND_RAW_MATS_TEMP)
+        chosen = np.random.choice(potential_materials, 1, p=raw_material_probabilities)[0]
         if self.product.quality == 1 or not self.raw_materials:
-            self.raw_materials.append(random.choice(potential_materials))
+            self.raw_materials.append(chosen)
         if len(self.raw_materials) > 0 and random.random() < np.log(1 / len(self.raw_materials) + Config.EPSILON) * 10:
-            self.raw_materials.append(random.choice(potential_materials))
+            self.raw_materials.append(chosen)
 
     # fix forever growing raw_material issue
     def remove_raw_material(self):
         if len(self.raw_materials) > 1 and random.random() < 1 / np.log10(self.product.quality + Config.EPSILON) / 10:
-            self.raw_materials.remove(random.choice(self.raw_materials))
+            materials_CBA = [p.price / p.quality for p in self.raw_materials]
+            raw_material_probabilities = calculation.calculate_choice_probabilities(materials_CBA, temperature=Config.REMOVE_RAW_MATS_TEMP)
+            self.raw_materials.remove(np.random.choice(self.raw_materials, 1, p=raw_material_probabilities)[0])
 
     def check_bankruptcy(self) -> bool:
-        # TODO: if a company has no worker for over x step, bankrupt
+        if self.bankruptcy_index == 5:
+            return True
         if self.funds < self.costs and len(self.raw_materials) > 0:
             # Reduce product cost before firing employees
             self.raw_materials.remove(sorted(list(self.raw_materials), key=lambda x: x.price, reverse=True)[0])
