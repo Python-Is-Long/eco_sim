@@ -5,9 +5,11 @@ from typing import List, Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
+from narwhals import median
 from tqdm import tqdm
 
 from utils.simulationObjects import Config, Individual, Company, Product, ProductGroup
+from utils import calculation
 
 
 class Economy:
@@ -18,6 +20,8 @@ class Economy:
         self.companies = self._create_companies(self.config.NUM_COMPANY)
         self.all_companies = self.companies.copy()
         self.stats = EconomyStats()
+        self.job_seekers = []
+        self.hiring_companies = []
 
     def _create_individuals(self, num_individuals: int) -> List[Individual]:
         talents = np.random.normal(self.config.TALENT_MEAN, self.config.TALENT_STD, num_individuals)
@@ -61,6 +65,9 @@ class Economy:
             company.remove_raw_material() # see if remove raw_material at this step
             company.update_product_attributes(population=len(self.individuals), company_count=len(self.companies))
             company.revenue = 0
+            median_salary = np.median([i.salary for i in self.individuals])
+            if company.need_to_hire(median_salary):
+                self.hiring_companies.append(company)
 
         # see if able to find a raw_material at this step
         if len(self.companies) > 1:
@@ -95,11 +102,12 @@ class Economy:
 
         # Individuals find jobs
         for individual in self.individuals:
-            if individual.employer is None:
-                individual.find_job(self.companies, individual.unemployed_state)
-
-            if individual.employer is None and individual.unemployed_state <5:
-                individual.unemployed_state += 1
+            runout_time = individual.estimate_runout(all_products)
+            ego_value = Individual.calculate_ego_value(runout_time)
+            if individual.need_job(ego_value):
+                self.job_seekers.append(individual)
+                if self.hiring_companies:
+                    individual.select_company(self.hiring_companies)
 
         market_potential = np.log10(len(self.individuals)) / len(self.companies)
         # Start new companies
@@ -109,6 +117,7 @@ class Economy:
                 self.start_new_company(individual)
 
         # Adjust workforce for companies
+        # TODO: dont loop through company with internal order, lian lian kan match each job to each individual in one go
         for company in self.companies:
             self.adjust_workforce(company)
 
@@ -125,18 +134,30 @@ class Economy:
             self.stats.num_new_companies += 1  # Increment new company counter
 
     def adjust_workforce(self, company: Company):
-        if company.revenue > company.costs * self.config.PROFIT_MARGIN_FOR_HIRING:
-            # Hire new employees
-            potential_employees = [ind for ind in self.individuals if ind.employer is None]
-            if potential_employees:
-                new_employee = max(potential_employees, key=lambda x: x.talent)
-                company.hire_employee(new_employee, new_employee.talent * self.config.SALARY_FACTOR)
+        if self.job_seekers:
+            median_salary = np.median([s.expected_salary for s in self.job_seekers])
+            if company.need_to_hire(median_salary):
+                salary_range_min = company.expected_salary_range[0]
+                salary_range_max = company.expected_salary_range[1]
+                job_seeker_pool = [s for s in self.job_seekers if salary_range_min < s.expected_salary < salary_range_max]
+                company.select_candidate(job_seeker_pool)
+                for candidate in company.candidates:
+                    if company in candidate.chosen_companies:
+                        company.employees.append(candidate)
+                        candidate.employer = company
+                        self.job_seekers.remove(candidate)
+                        self.hiring_companies.remove(company)
+                        break
         elif company.revenue < company.costs:
             # Fire employees
             if company.employees:
-                employee_to_fire = random.choice(company.employees)
+                employees_CBA = [e.talent / e.salary for e in company.employees]
+                fire_probabilities = calculation.calculate_choice_probabilities(employees_CBA,
+                                                                                     temperature=10)
+                employee_to_fire = np.random.choice(company.employees, 1, p=fire_probabilities)[0]
                 company.fire_employee(employee_to_fire)
-            # TODO: add a bankruptcy index every time when there's no worker to fire
+            else:
+                company.bankruptcy_index += 1
 
     def save_state(self, filename: str):
         with open(filename, 'wb') as f:
