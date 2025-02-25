@@ -165,6 +165,8 @@ class Individual(FundsObject, NamedObject):
 
         # set ego value max and min limit
         max_ego = 1.0
+        # TODO: the ego value can be extremely low because min product price can be extremely low, resulting in near 0 salary for many individuals.
+        #  To fix this, we should increase the minimum product price?
         min_ego = min(1.0, min_product_price / (self.talent * self.config.SALARY_FACTOR))
 
         # according to time (unemployed_state) adjust ego value
