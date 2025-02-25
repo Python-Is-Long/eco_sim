@@ -148,13 +148,35 @@ class Individual(FundsObject, NamedObject):
         chosen_product: Product = np.random.choice(products, p=product_scores / sum_product_scores)
         return chosen_product
 
-    def find_job(self, companies: List['Company'], unemployed_state):
-        # ego_value = [1, 0.9, 0.8, 0.7, 0.6, 0.5] # change to a function instead of a list
-        ego_value = [1, 0.95, 0.9, 0.85, 0.8, 0.75]
-        # TODO: make the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
+    def evaluate_opportunity(self, base_probability: float) -> bool:
+        """Decide whether to start a business, considering market demand and personal financial situation"""
+        wealth_factor = min(1.0, self.funds / (self.config.MIN_WEALTH_FOR_STARTUP * 2))
+        talent_factor = np.tanh(self.talent / 150)
+
+        startup_probability = base_probability * (0.5 + 0.3 * wealth_factor + 0.2 * talent_factor)
+        # 0.5 base chance = 50% # 0.3 wealth influence -> 30% # 0.2 -> talent influence ->20%
+        return np.random.random() < startup_probability
+
+    def calculate_ego_value(self, companies: List['Company'], unemployed_state: int) -> float:
+        """
+        the lowest ego value scale to the minimum product price (ppl will calculate minimum viable salary to survive)
+        """
+        min_product_price = min(c.product.price for c in companies) if companies else 1  # 避免沒有公司時出錯
+
+        # set ego value max and min limit
+        max_ego = 1.0
+        # TODO: the ego value can be extremely low because min product price can be extremely low, resulting in near 0 salary for many individuals.
+        #  To fix this, we should increase the minimum product price?
+        min_ego = min(1.0, min_product_price / (self.talent * self.config.SALARY_FACTOR))
+
+        # according to time (unemployed_state) adjust ego value
+        return max_ego - (unemployed_state / 5) * (max_ego - min_ego)  # larger unemployed_state -> ego value gets lower
+
+    def find_job(self, companies: List['Company'], unemployed_state: int):
         if self.employer is None:
+            ego_value = self.calculate_ego_value(companies, unemployed_state)
             for company in companies:
-                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value[unemployed_state]):
+                if company.hire_employee(self, self.talent * self.config.SALARY_FACTOR * ego_value):
                     break
 
     def estimate_runout(self) -> Optional[int]:
@@ -233,7 +255,8 @@ class Company(FundsObject, NamedObject):
                               self.estimate_sales(population=population, company_count=company_count))  # Ensure price >= 1
 
     def hire_employee(self, candidate: Individual, salary: float) -> bool:
-        #TODO: allow company to grow indefinitely
+        # Growth Constraint
+        self.max_employees = max(self.max_employees, int(self.funds / (salary * 10)))
         if self.funds >= salary and len(self.employees) < self.max_employees:
             candidate.employer = self
             candidate.salary = salary
